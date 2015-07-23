@@ -1,5 +1,5 @@
 
---X11/X.h, X11/Xfuncproto.h, X11/Xlib.h
+--X11/X.h, X11/Xfuncproto.h, X11/Xlib.h, X11/Xutil.h, X11/Xatom.h, MwmUtil.h
 
 local ffi = require'ffi'
 
@@ -11,6 +11,8 @@ typedef unsigned long Mask;
 typedef unsigned long Atom;
 typedef unsigned long VisualID;
 typedef unsigned long Time;
+typedef int Bool;
+typedef int Status;
 typedef XID Window;
 typedef XID Drawable;
 typedef XID Font;
@@ -22,6 +24,8 @@ typedef XID KeySym;
 typedef unsigned char KeyCode;
 enum {
 	None                 = 0,
+	False                = 0,
+	True                 = 1,
 	ParentRelative       = 1,
 	CopyFromParent       = 0,
 	PointerWindow        = 0,
@@ -165,7 +169,7 @@ enum {
 	SyncBoth             = 7,
 	RevertToNone         = (int)None,
 	RevertToPointerRoot  = (int)PointerRoot,
-	RevertToParent       = 2,
+	RevertToPaAnyPropertyTyperent       = 2,
 	Success              = 0,
 	BadRequest           = 1,
 	BadValue             = 2,
@@ -1094,12 +1098,14 @@ typedef struct {
 	int delta;
 	Font font;
 } XTextItem16;
-typedef union { Display *display;
+typedef union {
+	Display *display;
 	GC gc;
 	Visual *visual;
 	Screen *screen;
 	ScreenFormat *pixmap_format;
-	XFontStruct *font; } XEDataObject;
+	XFontStruct *font;
+} XEDataObject;
 typedef struct {
 	XRectangle max_ink_extent;
 	XRectangle max_logical_extent;
@@ -3548,119 +3554,671 @@ void XFreeEventData(
 	Display* ,
 	XGenericEventCookie*
 );
+
+// X11/Xutil.h
+enum {
+	NoValue              = 0x0000,
+	XValue               = 0x0001,
+	YValue               = 0x0002,
+	WidthValue           = 0x0004,
+	HeightValue          = 0x0008,
+	AllValues            = 0x000F,
+	XNegative            = 0x0010,
+	YNegative            = 0x0020,
+};
+typedef struct {
+	long flags;
+	int x, y;
+	int width, height;
+	int min_width, min_height;
+	int max_width, max_height;
+	int width_inc, height_inc;
+	struct {
+		int x;
+		int y;
+	} min_aspect, max_aspect;
+	int base_width, base_height;
+	int win_gravity;
+} XSizeHints;
+enum {
+	USPosition           = (1 << 0),
+	USSize               = (1 << 1),
+	PPosition            = (1 << 2),
+	PSize                = (1 << 3),
+	PMinSize             = (1 << 4),
+	PMaxSize             = (1 << 5),
+	PResizeInc           = (1 << 6),
+	PAspect              = (1 << 7),
+	PBaseSize            = (1 << 8),
+	PWinGravity          = (1 << 9),
+	PAllHints            = (PPosition|PSize|PMinSize|PMaxSize|PResizeInc|PAspect),
+};
+typedef struct {
+	long flags;
+	int input;
+	int initial_state;
+	Pixmap icon_pixmap;
+	Window icon_window;
+	int icon_x, icon_y;
+	Pixmap icon_mask;
+	XID window_group;
+} XWMHints;
+enum {
+	InputHint            = (1 << 0),
+	StateHint            = (1 << 1),
+	IconPixmapHint       = (1 << 2),
+	IconWindowHint       = (1 << 3),
+	IconPositionHint     = (1 << 4),
+	IconMaskHint         = (1 << 5),
+	WindowGroupHint      = (1 << 6),
+	AllHints             = (InputHint|StateHint|IconPixmapHint|IconWindowHint|IconPositionHint|IconMaskHint|WindowGroupHint),
+	XUrgencyHint         = (1 << 8),
+	WithdrawnState       = 0,
+	NormalState          = 1,
+	IconicState          = 3,
+	DontCareState        = 0,
+	ZoomState            = 2,
+	InactiveState        = 4,
+};
+typedef struct {
+	unsigned char *value;
+	Atom encoding;
+	int format;
+	unsigned long nitems;
+} XTextProperty;
+enum {
+	XNoMemory            = -1,
+	XLocaleNotSupported  = -2,
+	XConverterNotFound   = -3,
+};
+typedef enum {
+	XStringStyle,
+	XCompoundTextStyle,
+	XTextStyle,
+	XStdICCTextStyle,
+	XUTF8StringStyle
+} XICCEncodingStyle;
+typedef struct {
+	int min_width, min_height;
+	int max_width, max_height;
+	int width_inc, height_inc;
+} XIconSize;
+typedef struct {
+	char *res_name;
+	char *res_class;
+} XClassHint;
+typedef struct _XComposeStatus {
+	XPointer compose_ptr;
+	int chars_matched;
+} XComposeStatus;
+typedef struct _XRegion *Region;
+enum {
+	RectangleOut         = 0,
+	RectangleIn          = 1,
+	RectanglePart        = 2,
+};
+typedef struct {
+	Visual *visual;
+	VisualID visualid;
+	int screen;
+	int depth;
+	int class;
+	unsigned long red_mask;
+	unsigned long green_mask;
+	unsigned long blue_mask;
+	int colormap_size;
+	int bits_per_rgb;
+} XVisualInfo;
+enum {
+	VisualNoMask         = 0x0,
+	VisualIDMask         = 0x1,
+	VisualScreenMask     = 0x2,
+	VisualDepthMask      = 0x4,
+	VisualClassMask      = 0x8,
+	VisualRedMaskMask    = 0x10,
+	VisualGreenMaskMask  = 0x20,
+	VisualBlueMaskMask   = 0x40,
+	VisualColormapSizeMask = 0x80,
+	VisualBitsPerRGBMask = 0x100,
+	VisualAllMask        = 0x1FF,
+};
+typedef struct {
+ Colormap colormap;
+ unsigned long red_max;
+ unsigned long red_mult;
+ unsigned long green_max;
+ unsigned long green_mult;
+ unsigned long blue_max;
+ unsigned long blue_mult;
+ unsigned long base_pixel;
+ VisualID visualid;
+ XID killid;
+} XStandardColormap;
+enum {
+	ReleaseByFreeingColormap = ((XID) 1),
+	BitmapSuccess        = 0,
+	BitmapOpenFailed     = 1,
+	BitmapFileInvalid    = 2,
+	BitmapNoMemory       = 3,
+	XCSUCCESS            = 0,
+	XCNOMEM              = 1,
+	XCNOENT              = 2,
+};
+typedef int XContext;
+XClassHint *XAllocClassHint (
+	void
+);
+XIconSize *XAllocIconSize (
+	void
+);
+XSizeHints *XAllocSizeHints (
+	void
+);
+XStandardColormap *XAllocStandardColormap (
+	void
+);
+XWMHints *XAllocWMHints (
+	void
+);
+int XClipBox(
+	Region ,
+	XRectangle*
+);
+Region XCreateRegion(
+	void
+);
+const char *XDefaultString (void);
+int XDeleteContext(
+	Display* ,
+	XID ,
+	XContext
+);
+int XDestroyRegion(
+	Region
+);
+int XEmptyRegion(
+	Region
+);
+int XEqualRegion(
+	Region ,
+	Region
+);
+int XFindContext(
+	Display* ,
+	XID ,
+	XContext ,
+	XPointer*
+);
+int XGetClassHint(
+	Display* ,
+	Window ,
+	XClassHint*
+);
+int XGetIconSizes(
+	Display* ,
+	Window ,
+	XIconSize** ,
+	int*
+);
+int XGetNormalHints(
+	Display* ,
+	Window ,
+	XSizeHints*
+);
+int XGetRGBColormaps(
+	Display* ,
+	Window ,
+	XStandardColormap** ,
+	int* ,
+	Atom
+);
+int XGetSizeHints(
+	Display* ,
+	Window ,
+	XSizeHints* ,
+	Atom
+);
+int XGetStandardColormap(
+	Display* ,
+	Window ,
+	XStandardColormap* ,
+	Atom
+);
+int XGetTextProperty(
+	Display* ,
+	Window ,
+	XTextProperty* ,
+	Atom
+);
+XVisualInfo *XGetVisualInfo(
+	Display* ,
+	long ,
+	XVisualInfo* ,
+	int*
+);
+int XGetWMClientMachine(
+	Display* ,
+	Window ,
+	XTextProperty*
+);
+XWMHints *XGetWMHints(
+	Display* ,
+	Window
+);
+int XGetWMIconName(
+	Display* ,
+	Window ,
+	XTextProperty*
+);
+int XGetWMName(
+	Display* ,
+	Window ,
+	XTextProperty*
+);
+int XGetWMNormalHints(
+	Display* ,
+	Window ,
+	XSizeHints* ,
+	long*
+);
+int XGetWMSizeHints(
+	Display* ,
+	Window ,
+	XSizeHints* ,
+	long* ,
+	Atom
+);
+int XGetZoomHints(
+	Display* ,
+	Window ,
+	XSizeHints*
+);
+int XIntersectRegion(
+	Region ,
+	Region ,
+	Region
+);
+void XConvertCase(
+	KeySym ,
+	KeySym* ,
+	KeySym*
+);
+int XLookupString(
+	XKeyEvent* ,
+	char* ,
+	int ,
+	KeySym* ,
+	XComposeStatus*
+);
+int XMatchVisualInfo(
+	Display* ,
+	int ,
+	int ,
+	int ,
+	XVisualInfo*
+);
+int XOffsetRegion(
+	Region ,
+	int ,
+	int
+);
+int XPointInRegion(
+	Region ,
+	int ,
+	int
+);
+Region XPolygonRegion(
+	XPoint* ,
+	int ,
+	int
+);
+int XRectInRegion(
+	Region ,
+	int ,
+	int ,
+	unsigned int ,
+	unsigned int
+);
+int XSaveContext(
+	Display* ,
+	XID ,
+	XContext ,
+	const char*
+);
+int XSetClassHint(
+	Display* ,
+	Window ,
+	XClassHint*
+);
+int XSetIconSizes(
+	Display* ,
+	Window ,
+	XIconSize* ,
+	int
+);
+int XSetNormalHints(
+	Display* ,
+	Window ,
+	XSizeHints*
+);
+void XSetRGBColormaps(
+	Display* ,
+	Window ,
+	XStandardColormap* ,
+	int ,
+	Atom
+);
+int XSetSizeHints(
+	Display* ,
+	Window ,
+	XSizeHints* ,
+	Atom
+);
+int XSetStandardProperties(
+	Display* ,
+	Window ,
+	const char* ,
+	const char* ,
+	Pixmap ,
+	char** ,
+	int ,
+	XSizeHints*
+);
+void XSetTextProperty(
+	Display* ,
+	Window ,
+	XTextProperty* ,
+	Atom
+);
+void XSetWMClientMachine(
+	Display* ,
+	Window ,
+	XTextProperty*
+);
+int XSetWMHints(
+	Display* ,
+	Window ,
+	XWMHints*
+);
+void XSetWMIconName(
+	Display* ,
+	Window ,
+	XTextProperty*
+);
+void XSetWMName(
+	Display* ,
+	Window ,
+	XTextProperty*
+);
+void XSetWMNormalHints(
+	Display* ,
+	Window ,
+	XSizeHints*
+);
+void XSetWMProperties(
+	Display* ,
+	Window ,
+	XTextProperty* ,
+	XTextProperty* ,
+	char** ,
+	int ,
+	XSizeHints* ,
+	XWMHints* ,
+	XClassHint*
+);
+void XmbSetWMProperties(
+	Display* ,
+	Window ,
+	const char* ,
+	const char* ,
+	char** ,
+	int ,
+	XSizeHints* ,
+	XWMHints* ,
+	XClassHint*
+);
+void Xutf8SetWMProperties(
+	Display* ,
+	Window ,
+	const char* ,
+	const char* ,
+	char** ,
+	int ,
+	XSizeHints* ,
+	XWMHints* ,
+	XClassHint*
+);
+void XSetWMSizeHints(
+	Display* ,
+	Window ,
+	XSizeHints* ,
+	Atom
+);
+int XSetRegion(
+	Display* ,
+	GC ,
+	Region
+);
+void XSetStandardColormap(
+	Display* ,
+	Window ,
+	XStandardColormap* ,
+	Atom
+);
+int XSetZoomHints(
+	Display* ,
+	Window ,
+	XSizeHints*
+);
+int XShrinkRegion(
+	Region ,
+	int ,
+	int
+);
+int XStringListToTextProperty(
+	char** ,
+	int ,
+	XTextProperty*
+);
+int XSubtractRegion(
+	Region ,
+	Region ,
+	Region
+);
+int XmbTextListToTextProperty(
+	Display* display,
+	char** list,
+	int count,
+	XICCEncodingStyle style,
+	XTextProperty* text_prop_return
+);
+int XwcTextListToTextProperty(
+	Display* display,
+	wchar_t** list,
+	int count,
+	XICCEncodingStyle style,
+	XTextProperty* text_prop_return
+);
+int Xutf8TextListToTextProperty(
+	Display* display,
+	char** list,
+	int count,
+	XICCEncodingStyle style,
+	XTextProperty* text_prop_return
+);
+void XwcFreeStringList(
+	wchar_t** list
+);
+int XTextPropertyToStringList(
+	XTextProperty* ,
+	char*** ,
+	int*
+);
+int XmbTextPropertyToTextList(
+	Display* display,
+	const XTextProperty* text_prop,
+	char*** list_return,
+	int* count_return
+);
+int XwcTextPropertyToTextList(
+	Display* display,
+	const XTextProperty* text_prop,
+	wchar_t*** list_return,
+	int* count_return
+);
+int Xutf8TextPropertyToTextList(
+	Display* display,
+	const XTextProperty* text_prop,
+	char*** list_return,
+	int* count_return
+);
+int XUnionRectWithRegion(
+	XRectangle* ,
+	Region ,
+	Region
+);
+int XUnionRegion(
+	Region ,
+	Region ,
+	Region
+);
+int XWMGeometry(
+	Display* ,
+	int ,
+	const char* ,
+	const char* ,
+	unsigned int ,
+	XSizeHints* ,
+	int* ,
+	int* ,
+	int* ,
+	int* ,
+	int*
+);
+int XXorRegion(
+	Region ,
+	Region ,
+	Region
+);
+
+// X11/Xatom.h
+enum {
+	XATOM_H              = 1,
+	XA_PRIMARY           = 1,
+	XA_SECONDARY         = 2,
+	XA_ARC               = 3,
+	XA_ATOM              = 4,
+	XA_BITMAP            = 5,
+	XA_CARDINAL          = 6,
+	XA_COLORMAP          = 7,
+	XA_CURSOR            = 8,
+	XA_CUT_BUFFER0       = 9,
+	XA_CUT_BUFFER1       = 10,
+	XA_CUT_BUFFER2       = 11,
+	XA_CUT_BUFFER3       = 12,
+	XA_CUT_BUFFER4       = 13,
+	XA_CUT_BUFFER5       = 14,
+	XA_CUT_BUFFER6       = 15,
+	XA_CUT_BUFFER7       = 16,
+	XA_DRAWABLE          = 17,
+	XA_FONT              = 18,
+	XA_INTEGER           = 19,
+	XA_PIXMAP            = 20,
+	XA_POINT             = 21,
+	XA_RECTANGLE         = 22,
+	XA_RESOURCE_MANAGER  = 23,
+	XA_RGB_COLOR_MAP     = 24,
+	XA_RGB_BEST_MAP      = 25,
+	XA_RGB_BLUE_MAP      = 26,
+	XA_RGB_DEFAULT_MAP   = 27,
+	XA_RGB_GRAY_MAP      = 28,
+	XA_RGB_GREEN_MAP     = 29,
+	XA_RGB_RED_MAP       = 30,
+	XA_STRING            = 31,
+	XA_VISUALID          = 32,
+	XA_WINDOW            = 33,
+	XA_WM_COMMAND        = 34,
+	XA_WM_HINTS          = 35,
+	XA_WM_CLIENT_MACHINE = 36,
+	XA_WM_ICON_NAME      = 37,
+	XA_WM_ICON_SIZE      = 38,
+	XA_WM_NAME           = 39,
+	XA_WM_NORMAL_HINTS   = 40,
+	XA_WM_SIZE_HINTS     = 41,
+	XA_WM_ZOOM_HINTS     = 42,
+	XA_MIN_SPACE         = 43,
+	XA_NORM_SPACE        = 44,
+	XA_MAX_SPACE         = 45,
+	XA_END_SPACE         = 46,
+	XA_SUPERSCRIPT_X     = 47,
+	XA_SUPERSCRIPT_Y     = 48,
+	XA_SUBSCRIPT_X       = 49,
+	XA_SUBSCRIPT_Y       = 50,
+	XA_UNDERLINE_POSITION = 51,
+	XA_UNDERLINE_THICKNESS = 52,
+	XA_STRIKEOUT_ASCENT  = 53,
+	XA_STRIKEOUT_DESCENT = 54,
+	XA_ITALIC_ANGLE      = 55,
+	XA_X_HEIGHT          = 56,
+	XA_QUAD_WIDTH        = 57,
+	XA_WEIGHT            = 58,
+	XA_POINT_SIZE        = 59,
+	XA_RESOLUTION        = 60,
+	XA_COPYRIGHT         = 61,
+	XA_NOTICE            = 62,
+	XA_FONT_NAME         = 63,
+	XA_FAMILY_NAME       = 64,
+	XA_FULL_NAME         = 65,
+	XA_CAP_HEIGHT        = 66,
+	XA_WM_CLASS          = 67,
+	XA_WM_TRANSIENT_FOR  = 68,
+	XA_LAST_PREDEFINED   = 68,
+};
+
+// _MOTIF_WM_HINTS property
+typedef struct {
+	unsigned long flags, functions, decorations;
+	long input_mode;
+	unsigned long status;
+} MotifWmHints;
+
+enum {
+	MOTIF_WM_HINTS_ELEMENTS = 5,
+	MWM_HINTS_FUNCTIONS     = (1 << 0),
+	MWM_HINTS_DECORATIONS   = (1 << 1),
+	MWM_HINTS_INPUT_MODE    = (1 << 2),
+	MWM_HINTS_STATUS        = (1 << 3),
+	MWM_FUNC_ALL            = (1 << 0),
+	MWM_FUNC_RESIZE         = (1 << 1),
+	MWM_FUNC_MOVE           = (1 << 2),
+	MWM_FUNC_MINIMIZE       = (1 << 3),
+	MWM_FUNC_MAXIMIZE       = (1 << 4),
+	MWM_FUNC_CLOSE          = (1 << 5),
+	MWM_DECOR_ALL           = (1 << 0),
+	MWM_DECOR_BORDER        = (1 << 1),
+	MWM_DECOR_RESIZEH       = (1 << 2),
+	MWM_DECOR_TITLE         = (1 << 3),
+	MWM_DECOR_MENU          = (1 << 4),
+	MWM_DECOR_MINIMIZE      = (1 << 5),
+	MWM_DECOR_MAXIMIZE      = (1 << 6),
+	MWM_INPUT_MODELESS                  = 0,
+	MWM_INPUT_PRIMARY_APPLICATION_MODAL = 1,
+	MWM_INPUT_SYSTEM_MODAL              = 2,
+	MWM_INPUT_FULL_APPLICATION_MODAL    = 3,
+	MWM_INPUT_APPLICATION_MODAL         = 1,
+	MWM_TEAROFF_WINDOW      = (1 << 0),
+};
 ]]
 
---[[
-local M = {}
+local X = {} --macro namespace
 
-M.AllPlanes = ffi.abi'32bit' and 0xffffffff or 0xffffffffffffffffULL
+--macros from X11/Xutil.h
 
---NOTE: these are not needed as they all have X...() equivalents.
-function M.ConnectionNumber(dpy) return dpy.fd end
-function M.RootWindow(dpy,scr) return M.ScreenOfDisplay(dpy,scr.root) end
-function M.DefaultScreen(dpy) return dpy.default_screen end
-function M.DefaultRootWindow(dpy) return M.ScreenOfDisplay(dpy,M.DefaultScreen(dpy).root) end
-function M.DefaultVisual(dpy,scr) return M.ScreenOfDisplay(dpy,scr.root_visual) end
-function M.DefaultGC(dpy,scr) return M.ScreenOfDisplay(dpy,scr.default_gc) end
-function M.BlackPixel(dpy,scr) return M.ScreenOfDisplay(dpy,scr.black_pixel) end
-function M.WhitePixel(dpy,scr) return M.ScreenOfDisplay(dpy,scr.white_pixel) end
-function M.QLength(dpy) return dpy.qlen end
-function M.DisplayWidth(dpy,scr) return M.ScreenOfDisplay(dpy,scr.width) end
-function M.DisplayHeight(dpy,scr) return M.ScreenOfDisplay(dpy,scr.height) end
-function M.DisplayWidthMM(dpy,scr) return M.ScreenOfDisplay(dpy,scr.mwidth) end
-function M.DisplayHeightMM(dpy,scr) return M.ScreenOfDisplay(dpy,scr.mheight) end
-function M.DisplayPlanes(dpy,scr) return M.ScreenOfDisplay(dpy,scr.root_depth) end
-function M.DisplayCells(dpy,scr) return DefaultVisual(dpy,scr.map_entries) end
-function M.ScreenCount(dpy) return dpy.nscreens end
-function M.ServerVendor(dpy) return dpy.vendor end
-function M.ProtocolVersion(dpy) return dpy.proto_major_version end
-function M.ProtocolRevision(dpy) return dpy.proto_minor_version end
-function M.VendorRelease(dpy) return dpy.release end
-function M.DisplayString(dpy) return dpy.display_name end
-function M.DefaultDepth(dpy,scr) return M.ScreenOfDisplay(dpy,scr.root_depth) end
-function M.DefaultColormap(dpy,scr) return M.ScreenOfDisplay(dpy,scr.cmap) end
-function M.BitmapUnit(dpy) return dpy.bitmap_unit end
-function M.BitmapBitOrder(dpy) return dpy.bitmap_bit_order end
-function M.BitmapPad(dpy) return dpy.bitmap_pad end
-function M.ImageByteOrder(dpy) return dpy.byte_order end
-function M.NextRequest(dpy) return dpy.request + 1 end
-function M.LastKnownRequestProcessed(dpy) return dpy.last_request_read end
-function M.ScreenOfDisplay(dpy,scr) return dpy.screens[scr] end
-function M.DefaultScreenOfDisplay(dpy) return M.ScreenOfDisplay(dpy, M.DefaultScreen(dpy)) end
-function M.DisplayOfScreen(s) return s.display end
-function M.RootWindowOfScreen(s) return s.root end
-function M.BlackPixelOfScreen(s) return s.black_pixel end
-function M.WhitePixelOfScreen(s) return s.white_pixel end
-function M.DefaultColormapOfScreen(s) return s.cmap end
-function M.DefaultDepthOfScreen(s) return s.root_depth end
-function M.DefaultGCOfScreen(s) return s.default_gc end
-function M.DefaultVisualOfScreen(s) return s.root_visual end
-function M.WidthOfScreen(s) return s.width end
-function M.HeightOfScreen(s) return s.height end
-function M.WidthMMOfScreen(s) return s.mwidth end
-function M.HeightMMOfScreen(s) return s.mheight end
-function M.PlanesOfScreen(s) return s.root_depth end
-function M.CellsOfScreen(s) return M.DefaultVisualOfScreen(s.map_entries) end
-function M.MinCmapsOfScreen(s) return s.min_maps end
-function M.MaxCmapsOfScreen(s) return s.max_maps end
-function M.DoesSaveUnders(s) return s.save_unders end
-function M.DoesBackingStore(s) return s.backing_store end
-function M.EventMaskOfScreen(s) return s.root_input_mask end
+function X.XAllocID(dpy) return dpy.resource_alloc(dpy) end
+function X.XDestroyImage(ximage) return ximage.f.destroy_image(ximage) end
+function X.XGetPixel(ximage,x,y) return ximage.f.get_pixel(ximage, x, y) end
+function X.XPutPixel(ximage,x,y,pixel) return ximage.f.put_pixel(ximage, x, y, pixel) end
+function X.XSubImage(ximage,x,y,width,height) return ximage.f.sub_image(ximage, x, y, width, height) end
+function X.XAddPixel(ximage,value) return ximage.f.add_pixel(ximage, value) end
 
-function M.XAllocID(dpy) return dpy.resource_alloc(dpy) end
-
-M.XNRequiredCharSet    = "requiredCharSet"
-M.XNQueryOrientation   = "queryOrientation"
-M.XNBaseFontName       = "baseFontName"
-M.XNOMAutomatic        = "omAutomatic"
-M.XNMissingCharSet     = "missingCharSet"
-M.XNDefaultString      = "defaultString"
-M.XNOrientation        = "orientation"
-M.XNDirectionalDependentDrawing = "directionalDependentDrawing"
-M.XNContextualDrawing  = "contextualDrawing"
-M.XNFontInfo           = "fontInfo"
-M.XNVaNestedList       = "XNVaNestedList"
-M.XNQueryInputStyle    = "queryInputStyle"
-M.XNClientWindow       = "clientWindow"
-M.XNInputStyle         = "inputStyle"
-M.XNFocusWindow        = "focusWindow"
-M.XNResourceName       = "resourceName"
-M.XNResourceClass      = "resourceClass"
-M.XNGeometryCallback   = "geometryCallback"
-M.XNDestroyCallback    = "destroyCallback"
-M.XNFilterEvents       = "filterEvents"
-M.XNPreeditStartCallback = "preeditStartCallback"
-M.XNPreeditDoneCallback = "preeditDoneCallback"
-M.XNPreeditDrawCallback = "preeditDrawCallback"
-M.XNPreeditCaretCallback = "preeditCaretCallback"
-M.XNPreeditStateNotifyCallback = "preeditStateNotifyCallback"
-M.XNPreeditAttributes  = "preeditAttributes"
-M.XNStatusStartCallback = "statusStartCallback"
-M.XNStatusDoneCallback = "statusDoneCallback"
-M.XNStatusDrawCallback = "statusDrawCallback"
-M.XNStatusAttributes   = "statusAttributes"
-M.XNArea               = "area"
-M.XNAreaNeeded         = "areaNeeded"
-M.XNSpotLocation       = "spotLocation"
-M.XNColormap           = "colorMap"
-M.XNStdColormap        = "stdColorMap"
-M.XNForeground         = "foreground"
-M.XNBackground         = "background"
-M.XNBackgroundPixmap   = "backgroundPixmap"
-M.XNFontSet            = "fontSet"
-M.XNLineSpace          = "lineSpace"
-M.XNCursor             = "cursor"
-M.XNQueryIMValuesList  = "queryIMValuesList"
-M.XNQueryICValuesList  = "queryICValuesList"
-M.XNVisiblePosition    = "visiblePosition"
-M.XNR6PreeditCallback  = "r6PreeditCallback"
-M.XNStringConversionCallback = "stringConversionCallback"
-M.XNStringConversion   = "stringConversion"
-M.XNResetState         = "resetState"
-M.XNHotKey             = "hotKey"
-M.XNHotKeyState        = "hotKeyState"
-M.XNPreeditState       = "preeditState"
-M.XNSeparatorofNestedList = "separatorofNestedList"
-
-return M
-]]
+return X
