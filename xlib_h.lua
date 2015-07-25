@@ -1,5 +1,5 @@
 
---X11/X.h, X11/Xfuncproto.h, X11/Xlib.h, X11/Xutil.h, X11/Xatom.h, MwmUtil.h
+--X11/X.h, X11/Xfuncproto.h, X11/Xlib.h, X11/Xutil.h, X11/Xatom.h, Xm/MwmUtil.h
 
 local ffi = require'ffi'
 
@@ -2500,14 +2500,11 @@ int XHeightMMOfScreen(
 int XHeightOfScreen(
 	Screen*
 );
+typedef int (*XIfEventCallback) (Display*, XEvent*, XPointer);
 int XIfEvent(
 	Display* ,
 	XEvent* ,
-	int (*) (
-		 Display* ,
-				  XEvent* ,
-				  XPointer
-				) ,
+	XIfEventCallback ,
 	XPointer
 );
 int XImageByteOrder(
@@ -2600,7 +2597,7 @@ int XPeekEvent(
 int XPeekIfEvent(
 	Display* ,
 	XEvent* ,
-	int (*) (Display*, XEvent*, XPointer) ,
+	XIfEventCallback ,
 	XPointer
 );
 int XPending(
@@ -4175,25 +4172,33 @@ enum {
 	XA_LAST_PREDEFINED   = 68,
 };
 
-// _MOTIF_WM_HINTS property
+// Xm/MwmUtil.h
+
+// _MOTIF_WM_HINTS property layout.
+// 32-bit property items are stored as long on the client. XChangeProperty
+// handles the conversion to the actual 32-bit quantities sent to the server.
 typedef struct {
 	unsigned long flags, functions, decorations;
 	long input_mode;
 	unsigned long status;
-} MotifWmHints;
+} PropMotifWmHints;
 
 enum {
+	/* number of elements of size 32 in _MOTIF_WM_HINTS */
 	MOTIF_WM_HINTS_ELEMENTS = 5,
+	/* bit definitions for MwmHints.flags */
 	MWM_HINTS_FUNCTIONS     = (1 << 0),
 	MWM_HINTS_DECORATIONS   = (1 << 1),
 	MWM_HINTS_INPUT_MODE    = (1 << 2),
 	MWM_HINTS_STATUS        = (1 << 3),
+	/* bit definitions for MwmHints.functions */
 	MWM_FUNC_ALL            = (1 << 0),
 	MWM_FUNC_RESIZE         = (1 << 1),
 	MWM_FUNC_MOVE           = (1 << 2),
 	MWM_FUNC_MINIMIZE       = (1 << 3),
 	MWM_FUNC_MAXIMIZE       = (1 << 4),
 	MWM_FUNC_CLOSE          = (1 << 5),
+	/* bit definitions for MwmHints.decorations */
 	MWM_DECOR_ALL           = (1 << 0),
 	MWM_DECOR_BORDER        = (1 << 1),
 	MWM_DECOR_RESIZEH       = (1 << 2),
@@ -4201,11 +4206,13 @@ enum {
 	MWM_DECOR_MENU          = (1 << 4),
 	MWM_DECOR_MINIMIZE      = (1 << 5),
 	MWM_DECOR_MAXIMIZE      = (1 << 6),
+	/* values for MwmHints.input_mode */
 	MWM_INPUT_MODELESS                  = 0,
 	MWM_INPUT_PRIMARY_APPLICATION_MODAL = 1,
 	MWM_INPUT_SYSTEM_MODAL              = 2,
 	MWM_INPUT_FULL_APPLICATION_MODAL    = 3,
 	MWM_INPUT_APPLICATION_MODAL         = 1,
+	/* bit definitions for MwmHints.status */
 	MWM_TEAROFF_WINDOW      = (1 << 0),
 };
 ]]

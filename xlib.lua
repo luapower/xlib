@@ -51,6 +51,16 @@ local function maskedset(dt, t, masks)
 	return mask
 end
 
+local function maskedget(t, mask, masks)
+	local dt = {}
+	for field, maskbit in pairs(masks) do
+		if bit.band(mask, maskbit) ~= 0 then
+			dt[field] = t[field]
+		end
+	end
+	return dt
+end
+
 M.ptr = ptr
 M.xid = xid
 
@@ -117,7 +127,7 @@ function M.connect(...)
 
 	local e = ffi.new'XEvent'
 
-	--poll or wait for the next event
+	--poll without blocking or wait for the next event
 	function poll(block)
 		if not block and C.XPending(c) == 0 then
 			return
@@ -126,6 +136,7 @@ function M.connect(...)
 		return e
 	end
 
+	--peek without blocking
 	function peek()
 		if C.XPending(c) == 0 then
 			return
@@ -211,11 +222,14 @@ function M.connect(...)
 
 	--constructors and destructors --------------------------------------------
 
+	--NOTE: WMs ignore t.x and t.y unless create_window() is followed
+	--by set_wm_size_hints(win, {x = 0, y = 0}). Mental hospital-grade stuff.
 	function create_window(t)
 		local mask, attrs = attr_buf(t)
 		return assert(xid(C.XCreateWindow(c,
 			t.parent or screen.root,
-			t.x or 0, t.y or 0, --ignored (use config() after mapping to set position)
+			t.x or 0,
+			t.y or 0,
 			t.width,
 			t.height,
 			t.border_width or 0, --ignored
@@ -521,30 +535,32 @@ function M.connect(...)
 		C.XSetWMHints(c, win, hints)
 	end
 
-	function get_wm_normal_hints(win)
-		return ptr(C.XGetWMNormalHints(c, win), C.XFree)
+	local hints = ptr(C.XAllocSizeHints(), C.XFree)
+	local masks = {
+		x = C.PPosition,
+		y = C.PPosition,
+		width = C.PSize,
+		height = C.PSize,
+		min_width  = C.PMinSize,
+		min_height = C.PMinSize,
+		max_width  = C.PMaxSize,
+		max_height = C.PMaxSize,
+	}
+	function set_wm_size_hints(win, t, prop)
+		hints.flags = maskedset(hints, t, masks)
+		if hints.flags == 0 then return end
+		prop = atom(prop or 'WM_NORMAL_HINTS')
+		C.XSetWMSizeHints(c, win, hints, prop)
 	end
-	function set_wm_normal_hints(win, hints)
-		C.XSetWMNormalHints(c, win, hints)
-	end
-	local hints = ffi.new'XSizeHints'
-	function set_minmax(win, minw, minh, maxw, maxh) --these are client rect sizes
-		hints.flags = 0
-		if minw or minh then
-			hints.flags = bit.bor(hints.flags, C.PMinSize)
-			hints.min_width = minw or 0
-			hints.min_height = minh or 0
-		end
-		if maxw or maxh then
-			hints.flags = bit.bor(hints.flags, C.PMaxSize)
-			hints.max_width = maxw or 2^30 --just an arbitrarily large number
-			hints.max_height = maxh or 2^30
-		end
-		set_wm_normal_hints(win, hints)
+	local mask = ffi.new'long[1]'
+	function get_wm_size_hints(win, prop)
+		prop = atom(prop or 'WM_NORMAL_HINTS')
+		if C.XGetWMSizeHints(c, win, hints, mask, prop) == 0 then return end
+		return maskedget(hints, mask[0], masks)
 	end
 
 	local function decode_motif_wm_hints(val, len)
-		return ffi.new('MotifWmHints', cast('MotifWmHints*', val)[0])
+		return ffi.new('PropMotifWmHints', cast('PropMotifWmHints*', val)[0])
 	end
 	function get_motif_wm_hints(win)
 		get_prop(win, '_MOTIF_WM_HINTS', decode_motif_wm_hints)
@@ -588,10 +604,17 @@ function M.connect(...)
 		return get_prop(win, '_NET_FRAME_EXTENTS', decode_extents)
 	end
 
+	function map_raised(win)
+		C.XMapRaised(c, win)
+	end
+
+	--NOTE: XMapWindow doesn't raise and doesn't activate the window.
+	--NOTE: XMapWindow is async (wait for MapNotify).
 	function map(win)
 		C.XMapWindow(c, win)
 	end
 
+	--NOTE: XUnMapWindow is async (wait for UnmapNotify).
 	function unmap(win)
 		C.XUnmapWindow(c, win)
 	end

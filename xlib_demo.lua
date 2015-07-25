@@ -14,8 +14,15 @@ for i,s in xlib.get_screens() do
 	print('', i, s.width, s.height, s.root_depth)
 end
 
-local win = xlib.create_window{width = 500, height = 300}
-xlib.map(win)
+local win = xlib.create_window{
+	x = 500, y = 500,
+	width = 500,
+	height = 300,
+	event_mask = bit.bor(C.StructureNotifyMask, C.SubstructureNotifyMask),
+	background_pixel = 0,
+}
+
+xlib.set_wm_size_hints(win, {x = 0, y = 0})
 
 print'win props:'
 for i,a in xlib.list_props(win) do
@@ -34,7 +41,33 @@ xlib.set_atom_map_prop(win, 'WM_PROTOCOLS', {
 	_NET_WM_PING = true,     --respond to ping events
 })
 
+--set required properties for _NET_WM_PING.
 xlib.set_netwm_ping_info(win)
+
+--set motif hints before mapping the window.
+local hints = ffi.new'PropMotifWmHints'
+hints.flags = bit.bor(
+	C.MWM_HINTS_FUNCTIONS,
+	C.MWM_HINTS_DECORATIONS)
+hints.functions = bit.bor(
+	C.MWM_FUNC_RESIZE,
+	C.MWM_FUNC_MOVE,
+	C.MWM_FUNC_MINIMIZE,
+	C.MWM_FUNC_MAXIMIZE,
+	C.MWM_FUNC_CLOSE,
+	0)
+hints.decorations = bit.bor(
+	C.MWM_DECOR_BORDER,
+	C.MWM_DECOR_TITLE,
+	C.MWM_DECOR_MENU,
+	C.MWM_DECOR_RESIZEH,
+	C.MWM_DECOR_MINIMIZE,
+	C.MWM_DECOR_MAXIMIZE,
+	0)
+xlib.set_motif_wm_hints(win, hints)
+
+--finally show the window
+xlib.map(win)
 
 --events
 while true do
@@ -51,6 +84,7 @@ while true do
 			xlib.destroy_window(win)
 			break
 		end
+	elseif e.type == C.MapNotify then
 	end
 end
 
