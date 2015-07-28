@@ -3,28 +3,16 @@
 --Written by Cosmin Apreutesei. Public Domain.
 
 local ffi  = require'ffi'
+assert(ffi.os == 'Linux', 'platform not Linux')
+local bit  = require'bit'
 local glue = require'glue'
-local X  = require'xlib_h'     --macro namespace
-local C  = ffi.load'X11.so.6'  --Xlib core
-local XC = ffi.load'Xext.so.6' --Xlib core extensions
-local M  = {C = C, XC = XC, X = X}
+local X    = require'xlib_h'     --macro namespace
+local C    = ffi.load'X11.so.6'  --Xlib core
+local XC   = ffi.load'Xext.so.6' --Xlib core extensions
+local M    = {C = C, XC = XC, X = X}
 local print = print
 
---for setting _NET_WM_PID and WM_CLIENT_MACHINE.
---NOTE: these are for Linux/GLIBC and OSX only!
-ffi.cdef[[
-int getpid();
-int gethostname(char *name, size_t len);
-typedef struct {
-	char sysname[65];
-	char nodename[65];
-	char release[65];
-	char version[65];
-	char machine[65];
-	char __domainname[65];
-} _x_utsname;
-int uname(_x_utsname* buf);
-]]
+--conversion helpers ---------------------------------------------------------
 
 local function ptr(p, free) --NULL -> nil conversion and optional gc hooking.
 	return p ~= nil and ffi.gc(p, free) or nil
@@ -35,6 +23,11 @@ end
 local function xid(x)
 	return x ~= 0 and tonumber(x) or nil
 end
+
+M.ptr = ptr
+M.xid = xid
+
+--masked C struct helpers ----------------------------------------------------
 
 --Lua table -> masked C struct
 local function maskedset(ct, t, masks)
@@ -62,8 +55,56 @@ local function maskedget(ct, mask, masks)
 	return t
 end
 
-M.ptr = ptr
-M.xid = xid
+--glibc cdefs for setting _NET_WM_PID and WM_CLIENT_MACHINE ------------------
+
+ffi.cdef[[
+int x_getpid() asm("getpid");
+int x_gethostname(char *name, size_t len) asm("gethostname");
+typedef struct {
+	char sysname[65];
+	char nodename[65];
+	char release[65];
+	char version[65];
+	char machine[65];
+	char __domainname[65];
+} x_utsname;
+int x_uname(x_utsname* buf) asm("uname");
+]]
+
+--glibc cdefs for waiting on a socket with a timeout -------------------------
+
+ffi.cdef[[
+typedef struct {
+	int32_t bits[32];
+} x_fd_set;
+typedef struct {
+    long int tv_sec;
+    long int tv_usec;
+} x_timeval;
+int x_select(int, x_fd_set*, x_fd_set*, x_fd_set*, x_timeval*) asm("select");
+]]
+local function FD_ZERO(fds) ffi.fill(fds, ffi.sizeof(fds)) end
+local function FDELT(d) return d / 32 end
+local function FDMASK(d) return bit.lshift(1, d % 32) end
+local function FD_ISSET(d, set) return bit.band(set.bits[FDELT(d)], FDMASK(d)) ~= 0 end
+local function FD_SET(d, set)
+	assert(d <= 1024)
+	set.bits[FDELT(d)] = bit.bor(set.bits[FDELT(d)], FDMASK(d))
+end
+
+local timeval, fds
+local function select_fd(fd, timeout) --returns true if fd has data, false if timeout
+	timeval = timeval or ffi.new'x_timeval'
+	timeval.tv_sec = timeout
+	timeval.tv_usec = timeout * 10^-6
+	fds = fds or ffi.new'x_fd_set'
+	FD_ZERO(fds)
+	FD_SET(fd, fds)
+	assert(C.x_select(fd + 1, fds, nil, nil, timeval) >= 0)
+	return FD_ISSET(fd, fds)
+end
+
+--API ------------------------------------------------------------------------
 
 function M.connect(...)
 
@@ -78,6 +119,7 @@ function M.connect(...)
 	--connection --------------------------------------------------------------
 
 	local c            --Display*
+	local fd           --connection fd
 	local screen_num   --default screen number
 	local screen       --default Screen
 	local cleanup = {} --disconnect handlers
@@ -94,11 +136,13 @@ function M.connect(...)
 		c = C.XOpenDisplay(displayname)
 		assert(c ~= nil)
 		C.XSetErrorHandler(onerr)
+		fd = C.XConnectionNumber(c)
 		C.XSynchronize(c, true)
 		screen_num = C.XDefaultScreen(c)
 		screen = C.XScreenOfDisplay(c, screen_num)
 
 		xlib.display = c
+		xlib.display_fd = fd
 		xlib.screen = screen
 	end
 
@@ -111,7 +155,7 @@ function M.connect(...)
 			clean()
 		end
 		C.XCloseDisplay(c)
-		c, screen, xlib.display, xlib.screen = nil --prevent use after disconnect
+		c = nil --prevent use after disconnect
 	end
 
 	--server ------------------------------------------------------------------
@@ -139,30 +183,44 @@ function M.connect(...)
 
 	local e = ffi.new'XEvent'
 
-	--poll without blocking or wait for the next event.
-	function poll(block)
-		if not block and C.XPending(c) == 0 then
-			return
+	--poll or peek with or without blocking, returning an XEvent or nil.
+	local function poll_func(XXEvent)
+		return function(timeout)
+			local n = tonumber(timeout)
+			if n and n <= 0 then
+				timeout = nil --negative timeout means do not block
+			end
+			if not timeout then
+				if C.XPending(c) > 0 then --do not block
+					XXEvent(c, e)
+					return e
+				end
+			elseif timeout == true then
+				XXEvent(c, e) --block indefinitely
+				return e
+			else
+				if select_fd(fd, timeout) then --block with timeout
+					XXEvent(c, e)
+					return e
+				end
+			end
 		end
-		C.XNextEvent(c, e)
-		return e
 	end
+	poll = poll_func(C.XNextEvent)
+	peek = poll_func(C.XPeekEvent)
 
-	--peek without blocking or wait for an event and peek it.
-	function peek(block)
-		if not block and C.XPending(c) == 0 then
-			return
-		end
-		C.XPeekEvent(c, e)
-		return e
-	end
-
-	function poll_until(func)
-		while true do
-			local e = poll(true)
-			if func(e) then return end
+	--poll or peek until a predicate is satisfied, returning true or nil on timeout.
+	local function poll_until_func(poll)
+		return function(func, timeout)
+			while true do
+				local e = poll(timeout)
+				if not e then return end --timeout
+				if func(e) then return true end --condition satisfied
+			end
 		end
 	end
+	poll_until = poll_until_func(poll)
+	peek_until = poll_until_func(peek)
 
 	--atoms -------------------------------------------------------------------
 
@@ -633,19 +691,21 @@ function M.connect(...)
 		C.XSetTransientForHint(c, win, for_win)
 	end
 
-	--NOTE: set all intended window properties before requesting the frame extents.
+	--NOTE: set all other window properties before requesting the frame extents.
+	--NOTE: the property is not always set immediately so retry with a timeout.
 	--NOTE: as usual, expect this to be implemented poorly in most WMs.
-	--NOTE: returns nil if the property was not set to allow for retrying.
+	function frame_extents_supported()
+		return net_supported'_NET_REQUEST_FRAME_EXTENTS'
+	end
+	function request_frame_extents(win)
+		local e = client_message_event(win, atom'_NET_REQUEST_FRAME_EXTENTS')
+		send_client_message_to_root(e)
+	end
 	local function decode_extents(val)
 		val = cast('int32_t*', val)
 		return {val[0], val[2], val[1], val[3]} --left, top, right, bottom
 	end
-	function frame_extents(win)
-		if not net_supported'_NET_REQUEST_FRAME_EXTENTS' then
-			return 0, 0, 0, 0
-		end
-		local e = client_message_event(win, atom'_NET_REQUEST_FRAME_EXTENTS')
-		send_client_message_to_root(e)
+	function get_frame_extents(win)
 		local t = get_prop(win, '_NET_FRAME_EXTENTS', decode_extents)
 		if t then return unpack(t) end
 	end
@@ -772,14 +832,14 @@ function M.connect(...)
 
 	--set _NET_WM_PID and WM_CLIENT_MACHINE as needed by the protocol
 	function set_netwm_ping_info(win)
-		set_cardinal_prop(win, '_NET_WM_PID', ffi.C.getpid())
+		set_cardinal_prop(win, '_NET_WM_PID', ffi.C.x_getpid())
 		local name
 		local buf = ffi.new'char[256]'
-		if ffi.C.gethostname(buf, 256) == 0 then
+		if ffi.C.x_gethostname(buf, 256) == 0 then
 			name = ffi.string(buf)
 		else
-			local utsname = ffi.new'_x_utsname'
-			if ffi.C.uname(utsname) == 0 then
+			local utsname = ffi.new'x_utsname'
+			if ffi.C.x_uname(utsname) == 0 then
 				name = ffi.string(utsname.nodename)
 			end
 		end

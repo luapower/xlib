@@ -15,7 +15,7 @@ for i,s in xlib.get_screens() do
 end
 
 local win = xlib.create_window{
-	x = 500, y = 500,
+	x = 300, y = 100,
 	width = 500,
 	height = 300,
 	event_mask = bit.bor(C.StructureNotifyMask, C.SubstructureNotifyMask),
@@ -75,48 +75,29 @@ hints.decorations = bit.bor(
 	0)
 xlib.set_motif_wm_hints(win, hints)
 
-
-xlib.set_netwm_state(win, {
-	_NET_WM_STATE_MAXIMIZED_HORZ = true,
-	_NET_WM_STATE_MAXIMIZED_VERT = true,
-})
-
 --finally show the window
 xlib.map(win)
 
-xlib.unmap(win)
-
-xlib.set_netwm_state(win, {
-	_NET_WM_STATE_MAXIMIZED_HORZ = true,
-	_NET_WM_STATE_MAXIMIZED_VERT = true,
-})
-
-xlib.map(win)
-
-while true do
-	local st = xlib.get_netwm_state(win)
-	local max = st and
-		st[xlib.atom'_NET_WM_STATE_MAXIMIZED_HORZ'] and
-		st[xlib.atom'_NET_WM_STATE_MAXIMIZED_VERT'] or false
-	if max then return end
-end
-
 --events
 while true do
-	local e = xlib.poll(true)
-	print('event', e.type)
-	if e.type == C.ClientMessage then
-		local v = e.xclient.data.l[0]
-		print('', 'xclient', xlib.atom_name(v))
-		if v == xlib.atom'_NET_WM_PING' then
-			print'pong!'
-			xlib.pong(e)
-		elseif v == xlib.atom'WM_DELETE_WINDOW' then
-			print'close'
-			xlib.destroy_window(win)
-			break
+	local e = xlib.poll(1)
+	if e then
+		print('event', e.type)
+		if e.type == C.ClientMessage then
+			local v = e.xclient.data.l[0]
+			print('', 'xclient', xlib.atom_name(v))
+			if v == xlib.atom'_NET_WM_PING' then
+				print'pong!'
+				xlib.pong(e)
+			elseif v == xlib.atom'WM_DELETE_WINDOW' then
+				print'close'
+				xlib.destroy_window(win)
+				break
+			end
+		elseif e.type == C.MapNotify then
 		end
-	elseif e.type == C.MapNotify then
+	else
+		print'tick'
 	end
 end
 
