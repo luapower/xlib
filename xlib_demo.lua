@@ -29,6 +29,15 @@ for i,a in xlib.list_props(win) do
 	print('', xlib.atom_name(a))
 end
 
+local t = {}
+for atom in pairs(xlib.net_supported_map(win)) do
+	t[#t+1] = xlib.atom_name(atom)
+end
+table.sort(t)
+print('_NET_SUPPORTED: '..table.concat(t, ' '))
+
+io.stdout:write'\n'
+
 print'xsettings:'
 for k,v in pairs(xlib.get_xsettings()) do
 	print(string.format('\t%-24s %s', k, pp.format(v)))
@@ -66,8 +75,31 @@ hints.decorations = bit.bor(
 	0)
 xlib.set_motif_wm_hints(win, hints)
 
+
+xlib.set_netwm_state(win, {
+	_NET_WM_STATE_MAXIMIZED_HORZ = true,
+	_NET_WM_STATE_MAXIMIZED_VERT = true,
+})
+
 --finally show the window
 xlib.map(win)
+
+xlib.unmap(win)
+
+xlib.set_netwm_state(win, {
+	_NET_WM_STATE_MAXIMIZED_HORZ = true,
+	_NET_WM_STATE_MAXIMIZED_VERT = true,
+})
+
+xlib.map(win)
+
+while true do
+	local st = xlib.get_netwm_state(win)
+	local max = st and
+		st[xlib.atom'_NET_WM_STATE_MAXIMIZED_HORZ'] and
+		st[xlib.atom'_NET_WM_STATE_MAXIMIZED_VERT'] or false
+	if max then return end
+end
 
 --events
 while true do

@@ -36,29 +36,30 @@ local function xid(x)
 	return x ~= 0 and tonumber(x) or nil
 end
 
---set dt[k] = t[k] for each masked k and return the combined mask of set fields.
-local function maskedset(dt, t, masks)
+--Lua table -> masked C struct
+local function maskedset(ct, t, masks)
 	local mask = 0
 	if t then
 		for field, val in pairs(t) do
 			local maskbit = masks[field]
 			if maskbit then
 				mask = bit.bor(mask, maskbit)
-				dt[field] = val
+				ct[field] = val
 			end
 		end
 	end
 	return mask
 end
 
-local function maskedget(t, mask, masks)
-	local dt = {}
+--masked C struct -> Lua table
+local function maskedget(ct, mask, masks)
+	local t = {}
 	for field, maskbit in pairs(masks) do
 		if bit.band(mask, maskbit) ~= 0 then
-			dt[field] = t[field]
+			t[field] = ct[field]
 		end
 	end
-	return dt
+	return t
 end
 
 M.ptr = ptr
@@ -77,14 +78,25 @@ function M.connect(...)
 	--connection --------------------------------------------------------------
 
 	local c            --Display*
+	local screen_num   --default screen number
 	local screen       --default Screen
 	local cleanup = {} --disconnect handlers
+
+	local errbuf
+	local onerr = ffi.cast('XErrorHandler', function(c, e)
+		local errbuf_sz = 256
+		errbuf = errbuf or ffi.new('char[?]', errbuf_sz)
+		C.XGetErrorText(c, e.error_code, errbuf, errbuf_sz)
+		error(ffi.string(errbuf), 2)
+	end)
 
 	local function connect(displayname)
 		c = C.XOpenDisplay(displayname)
 		assert(c ~= nil)
+		C.XSetErrorHandler(onerr)
 		C.XSynchronize(c, true)
-		screen = C.XScreenOfDisplay(c, C.XDefaultScreen(c))
+		screen_num = C.XDefaultScreen(c)
+		screen = C.XScreenOfDisplay(c, screen_num)
 
 		xlib.display = c
 		xlib.screen = screen
@@ -127,7 +139,7 @@ function M.connect(...)
 
 	local e = ffi.new'XEvent'
 
-	--poll without blocking or wait for the next event
+	--poll without blocking or wait for the next event.
 	function poll(block)
 		if not block and C.XPending(c) == 0 then
 			return
@@ -136,13 +148,20 @@ function M.connect(...)
 		return e
 	end
 
-	--peek without blocking
-	function peek()
-		if C.XPending(c) == 0 then
+	--peek without blocking or wait for an event and peek it.
+	function peek(block)
+		if not block and C.XPending(c) == 0 then
 			return
 		end
 		C.XPeekEvent(c, e)
 		return e
+	end
+
+	function poll_until(func)
+		while true do
+			local e = poll(true)
+			if func(e) then return end
+		end
 	end
 
 	--atoms -------------------------------------------------------------------
@@ -396,7 +415,8 @@ function M.connect(...)
 
 	local decode = list_decoder'Atom'
 	function get_atom_map_prop(win, prop)
-		return get_prop(win, prop, decode)
+		local t = get_prop(win, prop, decode)
+		return t and glue.index(t)
 	end
 
 	local nbuf = ffi.new'int[1]'
@@ -440,7 +460,7 @@ function M.connect(...)
 		for i = 1,5 do
 			local v = select(i, ...)
 			if v then
-				e.data[datatype][i-1] = val_func(v)
+				e.xclient.data[datatype][i-1] = val_func(v)
 			end
 		end
 		return e
@@ -517,21 +537,37 @@ function M.connect(...)
 		return net_supported_map()[atom(s)]
 	end
 
-	function get_netwm_states(win)
+	function get_netwm_state(win)
 		return get_atom_map_prop(win, '_NET_WM_STATE')
 	end
-	function set_netwm_states(win, t) --before the window is mapped, use this.
+	function set_netwm_state(win, t) --before the window is mapped, use this.
 		set_atom_map_prop(win, '_NET_WM_STATE', t)
 	end
-	function change_netwm_states(win, set, atom1, atom2) --after a window is mapped, use this.
+	function change_netwm_state(win, set, atom1, atom2) --after a window is mapped, use this.
 		local e = atom_list_event(win, '_NET_WM_STATE', set and 1 or 0, atom1, atom2)
 		send_client_message_to_root(e)
 	end
 
+	local hints = ptr(C.XAllocWMHints(), C.XFree)
+	local masks = {
+		input = C.InputHint,
+		initial_state = C.StateHint,
+		icon_pixmap = C.IconPixmapHint,
+		icon_x = C.IconWindowHint,
+		icon_y = C.IconWindowHint,
+		icon_mask = C.IconMaskHint,
+		window_group = C.WindowGroupHint,
+	}
 	function get_wm_hints(win)
-		return ptr(C.XGetWMHints(c, win), C.XFree)
+		local hints = ptr(C.XGetWMHints(c, win))
+		if not hints then return end
+		local t = maskedget(hints, hints.flags, masks)
+		C.XFree(hints)
+		return t
 	end
-	function set_wm_hints(win, hints)
+	function set_wm_hints(win, t)
+		hints.flags = maskedset(hints, t, masks)
+		if hints.flags == 0 then return end
 		C.XSetWMHints(c, win, hints)
 	end
 
@@ -573,10 +609,19 @@ function M.connect(...)
 	local function decode_wm_state(val, len)
 		assert(len >= 2)
 		val = ffi.cast('int32_t*', val)
-		return val[0], val[1] --XCB_ICCCM_WM_STATE_*, icon_window_id
+		return {val[0], val[1]} --ICCCM_WM_STATE_*, icon_window_id
 	end
 	function get_wm_state(win)
-		return get_prop(win, 'WM_STATE', decode_wm_state)
+		return unpack(get_prop(win, 'WM_STATE', decode_wm_state))
+	end
+
+	--use this to change WM_STATE after the window is mapped.
+	--NOTE: this works with C.IconincState but not with C.NormalState.
+	--To restore a minimized window, map it instead.
+	function change_wm_state(win, state)
+		local e = client_message_event(win, 'WM_CHANGE_STATE')
+		e.xclient.data.l[0] = state
+		send_client_message_to_root(e)
 	end
 
 	local winbuf = ffi.new'Window[1]'
@@ -588,46 +633,41 @@ function M.connect(...)
 		C.XSetTransientForHint(c, win, for_win)
 	end
 
-	--request filling up the frame_extents property before the window is mapped.
-	function request_frame_extents(win)
-		local e = client_message_event(win, atom'_NET_REQUEST_FRAME_EXTENTS')
-		send_client_message_to_root(e)
-	end
+	--NOTE: set all intended window properties before requesting the frame extents.
+	--NOTE: as usual, expect this to be implemented poorly in most WMs.
+	--NOTE: returns nil if the property was not set to allow for retrying.
 	local function decode_extents(val)
 		val = cast('int32_t*', val)
-		return val[0], val[2], val[1], val[3] --left, top, right, bottom
+		return {val[0], val[2], val[1], val[3]} --left, top, right, bottom
 	end
 	function frame_extents(win)
 		if not net_supported'_NET_REQUEST_FRAME_EXTENTS' then
 			return 0, 0, 0, 0
 		end
-		return get_prop(win, '_NET_FRAME_EXTENTS', decode_extents)
-	end
-
-	function map_raised(win)
-		C.XMapRaised(c, win)
+		local e = client_message_event(win, atom'_NET_REQUEST_FRAME_EXTENTS')
+		send_client_message_to_root(e)
+		local t = get_prop(win, '_NET_FRAME_EXTENTS', decode_extents)
+		if t then return unpack(t) end
 	end
 
 	--NOTE: XMapWindow doesn't raise and doesn't activate the window.
-	--NOTE: XMapWindow is async (wait for MapNotify).
+	--NOTE: XMapWindow is async (wait for MapNotify to make it sync).
 	function map(win)
 		C.XMapWindow(c, win)
 	end
 
-	--NOTE: XUnMapWindow is async (wait for UnmapNotify).
-	function unmap(win)
-		C.XUnmapWindow(c, win)
+	--NOTE: XWithdrawWindow should always be used instead of XUnmapWindow
+	--because XUnmapWindow doesn't send the synthetic UnmapNotify required
+	--per ICCCM, so it doesn't properly hide minimized windows.
+	--NOTE: XWithdrawWindow is async (wait for UnmapNotify to make it sync).
+	function withdraw(win)
+		C.XWithdrawWindow(c, win, screen_num)
 	end
 
 	function get_net_active_window()
 		return get_window_prop(screen.root, '_NET_ACTIVE_WINDOW')
 	end
-
-	function net_active_window_supported()
-		return net_supported'_NET_ACTIVE_WINDOW'
-	end
-
-	function set_net_active_window(win, focused_win)
+	function change_net_active_window(win, focused_win)
 		local e = int32_list_event(win, '_NET_ACTIVE_WINDOW',
 			1, --message comes from an app
 			0, --timestamp
@@ -644,12 +684,6 @@ function M.connect(...)
 
 	function set_input_focus(win, fstate)
 		C.XSetInputFocus(c, win, fstate or C.RevertToNone, C.CurrentTime)
-	end
-
-	function minimize(win)
-		local e = client_message_event(win, 'WM_CHANGE_STATE')
-		e.data.l[0] = C.IconicState
-		send_client_message_to_root(e)
 	end
 
 	do
