@@ -58,8 +58,8 @@ end
 --glibc cdefs for setting _NET_WM_PID and WM_CLIENT_MACHINE ------------------
 
 ffi.cdef[[
-int x_getpid() asm("getpid");
-int x_gethostname(char *name, size_t len) asm("gethostname");
+int xlib_getpid() asm("getpid");
+int xlib_gethostname(char *name, size_t len) asm("gethostname");
 typedef struct {
 	char sysname[65];
 	char nodename[65];
@@ -67,8 +67,8 @@ typedef struct {
 	char version[65];
 	char machine[65];
 	char __domainname[65];
-} x_utsname;
-int x_uname(x_utsname* buf) asm("uname");
+} xlib_utsname;
+int xlib_uname(xlib_utsname* buf) asm("uname");
 ]]
 
 --glibc cdefs for waiting on a socket with a timeout -------------------------
@@ -76,12 +76,12 @@ int x_uname(x_utsname* buf) asm("uname");
 ffi.cdef[[
 typedef struct {
 	int32_t bits[32];
-} x_fd_set;
+} xlib_fd_set;
 typedef struct {
     long int tv_sec;
     long int tv_usec;
-} x_timeval;
-int x_select(int, x_fd_set*, x_fd_set*, x_fd_set*, x_timeval*) asm("select");
+} xlib_timeval;
+int xlib_select(int, xlib_fd_set*, xlib_fd_set*, xlib_fd_set*, xlib_timeval*) asm("select");
 ]]
 local function FD_ZERO(fds) ffi.fill(fds, ffi.sizeof(fds)) end
 local function FDELT(d) return d / 32 end
@@ -93,14 +93,14 @@ local function FD_SET(d, set)
 end
 
 local timeval, fds
-local function select_fd(fd, timeout) --returns true if fd has data, false if timeout
-	timeval = timeval or ffi.new'x_timeval'
+local function select_fd(fd, timeout) --returns true if fd has data, false if timed out
+	timeval = timeval or ffi.new'xlib_timeval'
 	timeval.tv_sec = timeout
-	timeval.tv_usec = timeout * 10^-6
-	fds = fds or ffi.new'x_fd_set'
+	timeval.tv_usec = (timeout - timeval.tv_sec) * 10^6
+	fds = fds or ffi.new'xlib_fd_set'
 	FD_ZERO(fds)
 	FD_SET(fd, fds)
-	assert(C.x_select(fd + 1, fds, nil, nil, timeval) >= 0)
+	assert(C.xlib_select(fd + 1, fds, nil, nil, timeval) >= 0)
 	return FD_ISSET(fd, fds)
 end
 
@@ -108,8 +108,8 @@ end
 
 function M.connect(...)
 
-	local type, select, unpack, assert, error, ffi, bit, table, ipairs, require, pcall, tonumber, glue =
-	      type, select, unpack, assert, error, ffi, bit, table, ipairs, require, pcall, tonumber, glue
+	local type, select, unpack, assert, error, ffi, bit, table, ipairs, require, pcall, tonumber, setmetatable, rawget, glue =
+	      type, select, unpack, assert, error, ffi, bit, table, ipairs, require, pcall, tonumber, setmetatable, rawget, glue
 	local cast = ffi.cast
 	local free = glue.free
 
@@ -190,15 +190,14 @@ function M.connect(...)
 			if n and n <= 0 then
 				timeout = nil --negative timeout means do not block
 			end
-			if not timeout then
-				if C.XPending(c) > 0 then --do not block
-					XXEvent(c, e)
-					return e
-				end
-			elseif timeout == true then
+			if C.XPending(c) > 0 then
+				XXEvent(c, e)
+				return e
+			end
+			if timeout == true then
 				XXEvent(c, e) --block indefinitely
 				return e
-			else
+			elseif timeout then
 				if select_fd(fd, timeout) then --block with timeout
 					XXEvent(c, e)
 					return e
@@ -472,9 +471,16 @@ function M.connect(...)
 	end
 
 	local decode = list_decoder'Atom'
+	local function atom_map_index(t, name)
+		return rawget(t, atom(name)) and true or false
+	end
 	function get_atom_map_prop(win, prop)
 		local t = get_prop(win, prop, decode)
-		return t and glue.index(t)
+		if not t then return end
+		t = glue.index(t)
+		setmetatable(t, t)
+		t.__index = atom_map_index
+		return t
 	end
 
 	local nbuf = ffi.new'int[1]'
@@ -592,16 +598,16 @@ function M.connect(...)
 		return get_atom_map_prop(screen.root, '_NET_SUPPORTED')
 	end)
 	function net_supported(s)
-		return net_supported_map()[atom(s)]
+		return net_supported_map()[s]
 	end
 
-	function get_netwm_state(win)
+	function get_net_wm_state(win)
 		return get_atom_map_prop(win, '_NET_WM_STATE')
 	end
-	function set_netwm_state(win, t) --before the window is mapped, use this.
+	function set_net_wm_state(win, t) --before the window is mapped, use this.
 		set_atom_map_prop(win, '_NET_WM_STATE', t)
 	end
-	function change_netwm_state(win, set, atom1, atom2) --after a window is mapped, use this.
+	function change_net_wm_state(win, set, atom1, atom2) --after a window is mapped, use this.
 		local e = atom_list_event(win, '_NET_WM_STATE', set and 1 or 0, atom1, atom2)
 		send_client_message_to_root(e)
 	end
@@ -670,7 +676,8 @@ function M.connect(...)
 		return {val[0], val[1]} --ICCCM_WM_STATE_*, icon_window_id
 	end
 	function get_wm_state(win)
-		return unpack(get_prop(win, 'WM_STATE', decode_wm_state))
+		local t = get_prop(win, 'WM_STATE', decode_wm_state)
+		if t then return unpack(t) end
 	end
 
 	--use this to change WM_STATE after the window is mapped.
@@ -831,15 +838,15 @@ function M.connect(...)
 	end
 
 	--set _NET_WM_PID and WM_CLIENT_MACHINE as needed by the protocol
-	function set_netwm_ping_info(win)
-		set_cardinal_prop(win, '_NET_WM_PID', ffi.C.x_getpid())
+	function set_net_wm_ping_info(win)
+		set_cardinal_prop(win, '_NET_WM_PID', ffi.C.xlib_getpid())
 		local name
 		local buf = ffi.new'char[256]'
-		if ffi.C.x_gethostname(buf, 256) == 0 then
+		if ffi.C.xlib_gethostname(buf, 256) == 0 then
 			name = ffi.string(buf)
 		else
-			local utsname = ffi.new'x_utsname'
-			if ffi.C.x_uname(utsname) == 0 then
+			local utsname = ffi.new'xlib_utsname'
+			if ffi.C.xlib_uname(utsname) == 0 then
 				name = ffi.string(utsname.nodename)
 			end
 		end
