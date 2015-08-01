@@ -133,11 +133,13 @@ function M.connect(...)
 	end)
 
 	local function connect(displayname)
-		c = C.XOpenDisplay(displayname)
-		assert(c ~= nil)
+
+		c = assert(ptr(C.XOpenDisplay(displayname)))
+
 		C.XSetErrorHandler(onerr)
-		fd = C.XConnectionNumber(c)
 		C.XSynchronize(c, true)
+
+		fd = C.XConnectionNumber(c)
 		screen_num = C.XDefaultScreen(c)
 		screen = C.XScreenOfDisplay(c, screen_num)
 
@@ -192,6 +194,7 @@ function M.connect(...)
 			end
 			if C.XPending(c) > 0 then
 				XXEvent(c, e)
+				C.XFilterEvent(e, 0) --add input method synthetic events
 				return e
 			end
 			if timeout == true then
@@ -758,7 +761,7 @@ function M.connect(...)
 		local ybuf = ffi.new'int[1]'
 		local winbuf = ffi.new'Window[1]'
 		function translate_coords(src_win, dst_win, x, y)
-			if C.XTranslateCoordinates(c, src_win, dst_win, x, y, xbuf, ybuf) == 0 then
+			if C.XTranslateCoordinates(c, src_win, dst_win, x, y, xbuf, ybuf, winbuf) == 0 then
 				return --windows are on different screens
 			end
 			return xbuf[0], ybuf[0], xid(winbuf[0])
@@ -855,6 +858,37 @@ function M.connect(...)
 		end
 	end
 
+	--[[
+	--input methods -----------------------------------------------------------
+
+	function set_locale_modifiers(im)
+		im = im or 'none' --XIM, SCIM, IBUS, etc.
+		if os.setlocale'' then --set native locale
+			if C.XSupportsLocale() ~= 0 then
+				C.XSetLocaleModifiers('@im='..im)
+			end
+		end
+	end
+
+	function open_im(win)
+		local im = ptr(C.XOpenIM(c, nil, nil, nil))
+		if not im then return end
+
+		local styles = ffi.new'XIMStyles *[1]'
+		failed_arg = ptr(C.XGetIMValues(im, C.XNQueryInputStyle, styles, nil))
+		if failed_arg then return end
+
+		for i=0,styles.count_styles-1 do
+		  print(string.format('style %d', styles.supported_styles[i])
+		end
+		local ic = ptr(C.XCreateIC(im,
+			C.XNInputStyle,
+			bit.bor(C.XIMPreeditNothing, C.XIMStatusNothing),
+			C.XNClientWindow, self.win, nil)
+		if not ic then return end
+		C.XSetICFocus(ic)
+	end
+
 	--shm extension -----------------------------------------------------------
 
 	function shm()
@@ -862,6 +896,7 @@ function M.connect(...)
 		local ok = reply ~= nil and reply.shared_pixmaps ~= 0
 		return lib
 	end
+	]]
 
 	connect(...)
 
