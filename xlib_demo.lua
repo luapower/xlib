@@ -51,7 +51,7 @@ xlib.set_atom_map_prop(win, 'WM_PROTOCOLS', {
 })
 
 --set required properties for _NET_WM_PING.
-xlib.set_netwm_ping_info(win)
+xlib.set_net_wm_ping_info(win)
 
 --set motif hints before mapping the window.
 local hints = ffi.new'PropMotifWmHints'

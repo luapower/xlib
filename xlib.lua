@@ -137,7 +137,6 @@ function M.connect(...)
 		c = assert(ptr(C.XOpenDisplay(displayname)))
 
 		C.XSetErrorHandler(onerr)
-		C.XSynchronize(c, true)
 
 		fd = C.XConnectionNumber(c)
 		screen_num = C.XDefaultScreen(c)
@@ -148,8 +147,16 @@ function M.connect(...)
 		xlib.screen = screen
 	end
 
+	function synchronize(enable)
+		C.XSynchronize(c, enable or false)
+	end
+
 	function flush()
 		C.XFlush(c)
+	end
+
+	function sync(discard_events)
+		C.XSync(c, discard_events or 0)
 	end
 
 	function disconnect()
@@ -342,29 +349,6 @@ function M.connect(...)
 		C.XFreeGC(c, gc)
 	end
 
-	local image = ffi.new'XImage'
-	function put_image(gc, data, size, w, h, depth, pix, dx, dy, left_pad)
-		image.width = w
-		image.height = h
-		image.format = C.ZPixmap
-		image.data = data
-		image.bitmap_unit = 8
-		image.byte_order = C.LSBFirst
-		image.bitmap_bit_order = C.LSBFirst
-		image.depth = depth
-		image.bytes_per_line = w * 4
-		image.bits_per_pixel = 32
-		image.red_mask   = 0xff
-		image.green_mask = 0xff
-		image.blue_mask  = 0xff
-		C.XInitImage(image)
-		C.XPutImage(c, pix, gc, image, 0, 0, dx or 0, dy or 0, w, h)
-	end
-
-	function copy_area(gc, src, sx, sy, w, h, dst, dx, dy)
-		C.XCopyArea(c, src, dst, gc, sx or 0, sy or 0, w, h, dx or 0, dy or 0)
-	end
-
 	--window properties -------------------------------------------------------
 
 	local nbuf = ffi.new'int[1]'
@@ -445,13 +429,14 @@ function M.connect(...)
 		end
 	end
 
-	local function list_decoder(ctype)
+	local function list_decoder(ctype, decode_val)
+		decode_val = decode_val or glue.pass
 		local ptr_ctype = ffi.typeof('$*', ffi.typeof(ctype))
 		return function(val, len)
 			val = cast(ptr_ctype, val)
 			local t = {}
 			for i=1,len do
-				t[i] = val[i-1]
+				t[i] = decode_val(val[i-1])
 			end
 			return t
 		end
@@ -473,17 +458,26 @@ function M.connect(...)
 		end
 	end
 
-	local decode = list_decoder'Atom'
+	local decode = list_decoder('Atom', tonumber)
 	local function atom_map_index(t, name)
 		return rawget(t, atom(name)) and true or false
 	end
-	function get_atom_map_prop(win, prop)
-		local t = get_prop(win, prop, decode)
-		if not t then return end
-		t = glue.index(t)
-		setmetatable(t, t)
-		t.__index = atom_map_index
-		return t
+	function get_atom_map_prop(win, prop, key)
+		local list = get_prop(win, prop, decode)
+		if not list then return end
+		--statically index the atoms
+		local t = {}
+		for i, atom in ipairs(list) do
+			t[atom] = true
+		end
+		--dynamically index the atoms names
+		setmetatable(t, {__index = atom_map_index})
+		--sugar for key lookup
+		if key then
+			return t[key]
+		else
+			return t
+		end
 	end
 
 	local nbuf = ffi.new'int[1]'
@@ -506,7 +500,7 @@ function M.connect(...)
 		set_prop(win, prop, C.XA_WINDOW, winbuf, 1)
 	end
 
-	local decode = list_decoder'Window'
+	local decode = list_decoder('Window', xid)
 	function get_window_list_prop(win, prop)
 		return get_prop(win, prop, decode)
 	end
@@ -604,8 +598,8 @@ function M.connect(...)
 		return net_supported_map()[s]
 	end
 
-	function get_net_wm_state(win)
-		return get_atom_map_prop(win, '_NET_WM_STATE')
+	function get_net_wm_state(win, key)
+		return get_atom_map_prop(win, '_NET_WM_STATE', key)
 	end
 	function set_net_wm_state(win, t) --before the window is mapped, use this.
 		set_atom_map_prop(win, '_NET_WM_STATE', t)
@@ -712,8 +706,13 @@ function M.connect(...)
 		send_client_message_to_root(e)
 	end
 	local function decode_extents(val)
-		val = cast('int32_t*', val)
-		return {val[0], val[2], val[1], val[3]} --left, top, right, bottom
+		val = cast('long*', val)
+		return {
+			tonumber(val[0]), --left
+			tonumber(val[2]), --top
+			tonumber(val[1]), --right
+			tonumber(val[3]), --bottom
+		}
 	end
 	function get_frame_extents(win)
 		local t = get_prop(win, '_NET_FRAME_EXTENTS', decode_extents)
@@ -856,6 +855,36 @@ function M.connect(...)
 		if name then
 			set_string_prop(win, 'WM_CLIENT_MACHINE', name)
 		end
+	end
+
+	--rendering ---------------------------------------------------------------
+
+	--NOTE: XClearWindow() doesn't generate Expose events.
+	function clear_area(win, x, y, w, h)
+		assert(C.XClearArea(c, win, x, y, w, h, true) == 1)
+	end
+
+	local image = ffi.new'XImage'
+	function put_image(gc, data, size, w, h, depth, pix, dx, dy, left_pad)
+		image.width = w
+		image.height = h
+		image.format = C.ZPixmap
+		image.data = data
+		image.bitmap_unit = 8
+		image.byte_order = C.LSBFirst
+		image.bitmap_bit_order = C.LSBFirst
+		image.depth = depth
+		image.bytes_per_line = w * 4
+		image.bits_per_pixel = 32
+		image.red_mask   = 0xff
+		image.green_mask = 0xff
+		image.blue_mask  = 0xff
+		C.XInitImage(image)
+		C.XPutImage(c, pix, gc, image, 0, 0, dx or 0, dy or 0, w, h)
+	end
+
+	function copy_area(gc, src, sx, sy, w, h, dst, dx, dy)
+		C.XCopyArea(c, src, dst, gc, sx or 0, sy or 0, w, h, dx or 0, dy or 0)
 	end
 
 	--[[
