@@ -145,6 +145,7 @@ function M.connect(...)
 		xlib.display = c
 		xlib.display_fd = fd
 		xlib.screen = screen
+		xlib.screen_number = screen_num
 	end
 
 	function synchronize(enable)
@@ -184,7 +185,7 @@ function M.connect(...)
 	end)
 
 	--check if the server has a specific extension
-	function extension(s)
+	function has_extension(s)
 		return extension_map()[s]
 	end
 
@@ -505,6 +506,11 @@ function M.connect(...)
 		return get_prop(win, prop, decode)
 	end
 
+	local decode = list_decoder('long', tonumber)
+	function get_int_list_prop(win, prop)
+		return get_prop(win, prop, decode)
+	end
+
 	--client message events ---------------------------------------------------
 
 	local function client_message_event(win, type, format)
@@ -720,7 +726,8 @@ function M.connect(...)
 	end
 
 	--NOTE: XMapWindow doesn't raise and doesn't activate the window.
-	--NOTE: XMapWindow is async (wait for MapNotify to make it sync).
+	--NOTE: XMapWindow is async (wait for MapNotify to make it sync
+	--but note that MapNotify is not sent if the window is hidden + minimized).
 	function map(win)
 		C.XMapWindow(c, win)
 	end
@@ -728,7 +735,8 @@ function M.connect(...)
 	--NOTE: XWithdrawWindow should always be used instead of XUnmapWindow
 	--because XUnmapWindow doesn't send the synthetic UnmapNotify required
 	--per ICCCM, so it doesn't properly hide minimized windows.
-	--NOTE: XWithdrawWindow is async (wait for UnmapNotify to make it sync).
+	--NOTE: XWithdrawWindow is async (wait for UnmapNotify to make it sync
+	--but note that UnmapNotify is not sent if the window was minimized).
 	function withdraw(win)
 		C.XWithdrawWindow(c, win, screen_num)
 	end
@@ -773,6 +781,19 @@ function M.connect(...)
 	function set_title(win, title)
 		set_string_prop(win, C.XA_WM_NAME, title)
 		set_string_prop(win, C.XA_WM_ICON_NAME, title)
+	end
+
+	--root window attributes --------------------------------------------------
+
+	function get_net_workarea(screen1, desktop_num)
+		local screen = screen1 or screen
+		local t = get_int_list_prop(screen.root, '_NET_WORKAREA')
+		if not t then return end
+		local dt = {}
+		for i=1,#t,4 do
+			dt[#dt+1] = {unpack(t, i, i+3)}
+		end
+		return desktop_num and dt[desktop_num] or dt
 	end
 
 	--selections --------------------------------------------------------------
@@ -885,6 +906,18 @@ function M.connect(...)
 
 	function copy_area(gc, src, sx, sy, w, h, dst, dx, dy)
 		C.XCopyArea(c, src, dst, gc, sx or 0, sy or 0, w, h, dx or 0, dy or 0)
+	end
+
+	--Xinerama extension ------------------------------------------------------
+
+	local XC
+	function xinerama_screens()
+		if not has_extension'XINERAMA' then return end
+		XC = XC or ffi.load'Xinerama'
+		if XC.XineramaIsActive(c) == 0 then return end
+		local nbuf = ffi.new'int[1]'
+		local screens = ptr(XC.XineramaQueryScreens(c, nbuf), C.XFree)
+		return screens, nbuf[0]
 	end
 
 	--[[

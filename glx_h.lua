@@ -4,7 +4,6 @@
 local ffi = require'ffi'
 
 require'xlib_h'
-require'xlib_xutil_h'
 
 ffi.cdef[[
 

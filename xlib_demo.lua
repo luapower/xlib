@@ -1,9 +1,13 @@
 local pp   = require'pp'
 local time = require'time'
 local xlib = require'xlib'
+local glx = require'glx'
+require'gl11'
 local ffi = require'ffi'
 
 local xlib = xlib.connect()
+local glx = glx.connect(xlib)
+local gl = glx.C
 local C = xlib.C
 
 local testatom = xlib.atom'TEST_ATOM'
@@ -14,12 +18,21 @@ for i,s in xlib.get_screens() do
 	print('', i, s.width, s.height, s.root_depth)
 end
 
+local glxctx
+for fbconfig in glx.choose_rgb_fbconfigs() do
+	glxctx = glx.create_context(fbconfig)
+	break
+end
+
 local win = xlib.create_window{
 	x = 300, y = 100,
 	width = 500,
 	height = 300,
-	event_mask = bit.bor(C.StructureNotifyMask, C.SubstructureNotifyMask),
-	background_pixel = 0,
+	event_mask = bit.bor(
+		C.ExposureMask,
+		C.StructureNotifyMask,
+		C.SubstructureNotifyMask
+	),
 }
 
 xlib.set_wm_size_hints(win, {x = 0, y = 0})
@@ -27,6 +40,17 @@ xlib.set_wm_size_hints(win, {x = 0, y = 0})
 print'win props:'
 for i,a in xlib.list_props(win) do
 	print('', xlib.atom_name(a))
+end
+
+print'root props:'
+for i,a in xlib.list_props(xlib.screen.root) do
+	print('', xlib.atom_name(a))
+end
+
+local t = xlib.get_net_workarea()
+print'_NET_WORKAREA:'
+for i=1,#t do
+	print('', unpack(t[i]))
 end
 
 local t = {}
@@ -41,6 +65,13 @@ io.stdout:write'\n'
 print'xsettings:'
 for k,v in pairs(xlib.get_xsettings()) do
 	print(string.format('\t%-24s %s', k, pp.format(v)))
+end
+
+print'xinerama screens:'
+local screens, n = xlib.xinerama_screens()
+for i=0,n-1 do
+	local scr = screens[i]
+	print(scr.screen_number, '', scr.x_org, scr.y_org, scr.width, scr.height)
 end
 
 --declare the X protocols that the window supports.
@@ -78,6 +109,11 @@ xlib.set_motif_wm_hints(win, hints)
 --finally show the window
 xlib.map(win)
 
+local function gl_draw()
+	gl.glClearColor(0.5, 0.5, 0.5, 0.5)
+	gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+end
+
 --events
 while true do
 	local e = xlib.poll(1)
@@ -94,11 +130,15 @@ while true do
 				xlib.destroy_window(win)
 				break
 			end
-		elseif e.type == C.MapNotify then
+		elseif e.type == C.Expose then
+			glx.make_current(win, glxctx)
+			gl_draw()
+			glx.swap_buffers(win)
 		end
 	else
 		print'tick'
 	end
 end
 
+glx.destroy_context(glxctx)
 xlib.disconnect()

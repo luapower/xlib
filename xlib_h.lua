@@ -1,5 +1,6 @@
 
---X11/X.h, X11/Xfuncproto.h, X11/Xlib.h, X11/Xutil.h, X11/Xatom.h, Xm/MwmUtil.h
+--X11/X.h, X11/Xfuncproto.h, X11/Xlib.h, X11/Xutil.h, X11/Xatom.h,
+--Xm/MwmUtil.h, X11/extensions/Xinerama.h
 
 local ffi = require'ffi'
 
@@ -4173,7 +4174,6 @@ enum {
 };
 
 // Xm/MwmUtil.h
-
 // _MOTIF_WM_HINTS property layout.
 // 32-bit property items are stored as long on the client. XChangeProperty
 // handles the conversion to the actual 32-bit quantities sent to the server.
@@ -4182,7 +4182,6 @@ typedef struct {
 	long input_mode;
 	unsigned long status;
 } PropMotifWmHints;
-
 enum {
 	/* number of elements of size 32 in _MOTIF_WM_HINTS */
 	MOTIF_WM_HINTS_ELEMENTS = 5,
@@ -4215,6 +4214,31 @@ enum {
 	/* bit definitions for MwmHints.status */
 	MWM_TEAROFF_WINDOW      = (1 << 0),
 };
+
+// X11/extensions/Xinerama.h
+typedef struct {
+	int screen_number;
+	short x_org;
+	short y_org;
+	short width;
+	short height;
+} XineramaScreenInfo;
+int XineramaQueryExtension (
+	Display *dpy,
+	int *event_base,
+	int *error_base
+);
+int XineramaQueryVersion(
+	Display *dpy,
+	int *major_versionp,
+	int *minor_versionp
+);
+int XineramaIsActive(Display *dpy);
+XineramaScreenInfo *
+XineramaQueryScreens(
+	Display *dpy,
+	int *number
+);
 ]]
 
 local X = {} --macro namespace
