@@ -2,15 +2,37 @@
 --Xlib binding.
 --Written by Cosmin Apreutesei. Public Domain.
 
+--All observations in the comments were made on an Ubuntu 10 Unity WM.
+--Since all WMs are hopelessly broken (because X is hopelessly broken),
+--don't expect these observations to hold on other WMs.
+
 local ffi  = require'ffi'
 assert(ffi.os == 'Linux', 'platform not Linux')
+
 local bit  = require'bit'
 local glue = require'glue'
-local X    = require'xlib_h'     --macro namespace
+local X    = require'xlib_h'     --X is the macro namespace
+local _    = require'xlib_xkblib_h'
 local C    = ffi.load'X11.so.6'  --Xlib core
 local XC   = ffi.load'Xext.so.6' --Xlib core extensions
 local M    = {C = C, XC = XC, X = X}
+
 local print = print
+
+--bit arrays over byte arrays ------------------------------------------------
+
+local band, bor, shl, shr = bit.band, bit.bor, bit.lshift, bit.rshift
+
+local function getbit(b, bits)
+	return band(bits[shr(b, 3)], shl(1, band(b, 7))) ~= 0
+end
+
+local function setbit(b, bits)
+	bits[shr(b, 3)] = bor(bits[shr(b, 3)], shl(1, band(b, 7)))
+end
+
+M.getbit = getbit
+M.setbit = setbit
 
 --conversion helpers ---------------------------------------------------------
 
@@ -29,14 +51,14 @@ M.xid = xid
 
 --masked C struct helpers ----------------------------------------------------
 
---Lua table -> masked C struct
+--set a masked C struct's fields based on a value table and a masks table.
 local function maskedset(ct, t, masks)
 	local mask = 0
 	if t then
 		for field, val in pairs(t) do
 			local maskbit = masks[field]
 			if maskbit then
-				mask = bit.bor(mask, maskbit)
+				mask = bor(mask, maskbit)
 				ct[field] = val
 			end
 		end
@@ -44,11 +66,11 @@ local function maskedset(ct, t, masks)
 	return mask
 end
 
---masked C struct -> Lua table
+--read the set values of a masked C struct into a Lua table.
 local function maskedget(ct, mask, masks)
 	local t = {}
 	for field, maskbit in pairs(masks) do
-		if bit.band(mask, maskbit) ~= 0 then
+		if band(mask, maskbit) ~= 0 then
 			t[field] = ct[field]
 		end
 	end
@@ -75,7 +97,7 @@ int xlib_uname(xlib_utsname* buf) asm("uname");
 
 ffi.cdef[[
 typedef struct {
-	int32_t bits[32];
+	uint8_t bits[128]; // 1024 bits
 } xlib_fd_set;
 typedef struct {
     long int tv_sec;
@@ -84,19 +106,17 @@ typedef struct {
 int xlib_select(int, xlib_fd_set*, xlib_fd_set*, xlib_fd_set*, xlib_timeval*) asm("select");
 ]]
 local function FD_ZERO(fds) ffi.fill(fds, ffi.sizeof(fds)) end
-local function FDELT(d) return d / 32 end
-local function FDMASK(d) return bit.lshift(1, d % 32) end
-local function FD_ISSET(d, set) return bit.band(set.bits[FDELT(d)], FDMASK(d)) ~= 0 end
+local function FD_ISSET(d, set) return getbit(d, set.bits) end
 local function FD_SET(d, set)
 	assert(d <= 1024)
-	set.bits[FDELT(d)] = bit.bor(set.bits[FDELT(d)], FDMASK(d))
+	setbit(d, set.bits)
 end
 
 local timeval, fds
 local function select_fd(fd, timeout) --returns true if fd has data, false if timed out
 	timeval = timeval or ffi.new'xlib_timeval'
 	timeval.tv_sec = timeout
-	timeval.tv_usec = (timeout - timeval.tv_sec) * 10^6
+	timeval.tv_usec = (timeout - math.floor(timeout)) * 10^6
 	fds = fds or ffi.new'xlib_fd_set'
 	FD_ZERO(fds)
 	FD_SET(fd, fds)
@@ -108,8 +128,10 @@ end
 
 function M.connect(...)
 
-	local type, select, unpack, assert, error, ffi, bit, table, ipairs, require, pcall, tonumber, setmetatable, rawget, glue =
-	      type, select, unpack, assert, error, ffi, bit, table, ipairs, require, pcall, tonumber, setmetatable, rawget, glue
+	local type, select, unpack, assert, error, ffi, bit, table, pairs, ipairs =
+	      type, select, unpack, assert, error, ffi, bit, table, pairs, ipairs
+	local require, pcall, tonumber, setmetatable, rawget, glue =
+	      require, pcall, tonumber, setmetatable, rawget, glue
 	local cast = ffi.cast
 	local free = glue.free
 
@@ -160,6 +182,11 @@ function M.connect(...)
 		C.XSync(c, discard_events or 0)
 	end
 
+	--for submodules to add cleanup functions to execute on disconnect
+	function gc(func)
+		table.insert(cleanup, func)
+	end
+
 	function disconnect()
 		for i,clean in ipairs(cleanup) do
 			clean()
@@ -168,11 +195,15 @@ function M.connect(...)
 		c = nil --prevent use after disconnect
 	end
 
+	function setC(newC)
+		C = newC
+	end
+
 	--server ------------------------------------------------------------------
 
-	--load the list of supported server extensions into a hash
-	local nbuf = ffi.new'int[1]'
-	extension_map = glue.memoize(function()
+	--load the list of supported server extensions into a memoized hash
+	extensions = glue.memoize(function()
+		local nbuf = ffi.new'int[1]'
 		local a = C.XListExtensions(c, nbuf)
 		local n = nbuf[0]
 		local t = {}
@@ -186,7 +217,7 @@ function M.connect(...)
 
 	--check if the server has a specific extension
 	function has_extension(s)
-		return extension_map()[s]
+		return extensions()[s]
 	end
 
 	--events ------------------------------------------------------------------
@@ -237,20 +268,19 @@ function M.connect(...)
 	local atom_map = {}    --{name = atom}
 	local atom_revmap = {} --{atom = name}
 
+	--lookup/intern an atom
 	local mem_atom = glue.memoize(function(s)
 		local atom = tonumber(C.XInternAtom(c, s, false))
 		atom_revmap[atom] = s
 		return atom
 	end, atom_map)
-
-	--lookup/intern an atom
 	function atom(s)
 		if type(s) ~= 'string' then return s end --pass through
 		return mem_atom(s)
 	end
 
 	--atom reverse lookup
-	atom_name = glue.memoize(function(atom)
+	local mem_atom_name = glue.memoize(function(atom)
 		local p = C.XGetAtomName(c, atom)
 		if p == nil then return end
 		local s = ffi.string(p)
@@ -258,6 +288,9 @@ function M.connect(...)
 		atom_map[s] = atom
 		return s
 	end, atom_revmap)
+	function atom_name(atom)
+		return mem_atom_name(tonumber(atom))
+	end
 
 	--given a map {atom -> true} return the map {atom_name -> atom}
 	function atom_names(t)
@@ -273,7 +306,10 @@ function M.connect(...)
 
 	--screens -----------------------------------------------------------------
 
-	function get_screens()
+	--NOTE: these days only one Screen is used and Xinerama is used to map
+	--physical displays to this virtual screen.
+
+	function screens()
 		local n = C.XScreenCount(c)
 		local i = -1
 		return function()
@@ -283,9 +319,8 @@ function M.connect(...)
 		end
 	end
 
-	--window attributes -------------------------------------------------------
+	--window attributes buffer (used below) -----------------------------------
 
-	local abuf = ffi.new'XSetWindowAttributes'
 	local masks = {
 		background_pixmap = C.CWBackPixmap,
 		background_pixel = C.CWBackPixel,
@@ -303,22 +338,24 @@ function M.connect(...)
 		colormap = C.CWColormap,
 		cursor = C.CWCursor,
 	}
+	local abuf
 	local function attr_buf(t) --attrs_t -> mask, attrs
+		abuf = abuf or ffi.new'XSetWindowAttributes'
 		return maskedset(abuf, t, masks), abuf
 	end
 
 	--constructors and destructors --------------------------------------------
 
-	--NOTE: WMs ignore t.x and t.y unless create_window() is followed
+	--NOTE: t.x and t.y are ignored unless create_window() is followed
 	--by set_wm_size_hints(win, {x = 0, y = 0}). Mental hospital-grade stuff.
 	function create_window(t)
 		local mask, attrs = attr_buf(t)
 		return assert(xid(C.XCreateWindow(c,
 			t.parent or screen.root,
-			t.x or 0,
-			t.y or 0,
-			t.width,
-			t.height,
+			t.x or 0,  --outer x (ignored)
+			t.y or 0,  --outer y (ignored)
+			t.width,   --inner width
+			t.height,  --inner height
 			t.border_width or 0, --ignored
 			t.depth or C.CopyFromParent,
 			t.class or C.CopyFromParent,
@@ -350,10 +387,10 @@ function M.connect(...)
 		C.XFreeGC(c, gc)
 	end
 
-	--window properties -------------------------------------------------------
+	--window properties: encoding and decoding --------------------------------
 
-	local nbuf = ffi.new'int[1]'
 	function list_props(win)
+		local nbuf = ffi.new'int[1]'
 		local a = ptr(C.XListProperties(c, win, nbuf), C.XFree)
 		local n = nbuf[0]
 		local i = -1
@@ -385,19 +422,24 @@ function M.connect(...)
 	local bytes_after = ffi.new'unsigned long[1]'
 	local data_ptr = ffi.new'unsigned char*[1]'
 	function get_prop(win, prop, decode)
+
 		local ret = C.XGetWindowProperty(c, win, atom(prop), 0, 2^22, false,
 			C.AnyPropertyType, reply_type, reply_format, nitems, bytes_after, data_ptr)
+
 		if ret == C.BadAtom or reply_type[0] == 0 then --property missing
 			return
 		end
 		assert(ret == 0)
+
 		if bytes_after[0] ~= 0 then
 			C.XFree(data_ptr[0])
 			error('property value truncated', 2)
 		end
+
 		local data = data_ptr[0]
 		local n = tonumber(nitems[0])
 		local ok, ret = pcall(decode, data, n, reply_format[0], reply_type[0])
+
 		C.XFree(data)
 		if not ok then
 			error(ret, 2)
@@ -451,7 +493,11 @@ function M.connect(...)
 
 	local atom_list = list_encoder('Atom', atom)
 	function set_atom_map_prop(win, prop, t)
-		local atoms, n = atom_list(glue.keys(t))
+		local dt = {}
+		for k,v in pairs(t) do
+			if v then dt[#dt+1] = k end
+		end
+		local atoms, n = atom_list(dt)
 		if n == 0 then
 			delete_prop(win, prop)
 		else
@@ -489,7 +535,7 @@ function M.connect(...)
 
 	local function decode_window(val, len)
 		if len == 0 then return end
-		return cast('Window*', val)[0]
+		return xid(cast('Window*', val)[0])
 	end
 	function get_window_prop(win, prop)
 		return get_prop(win, prop, decode_window)
@@ -541,15 +587,15 @@ function M.connect(...)
 		return list_event(win, type, 'l', atom, ...)
 	end
 
-	function send_client_message(win, e, propagate, mask)
+	function send_message(win, e, propagate, mask)
 		C.XSendEvent(c, win, propagate or false, mask or 0, e)
 	end
 
-	function send_client_message_to_root(e)
-		local mask = bit.bor(
+	function send_message_to_root(e, propagate, mask)
+		local mask = mask or bor(
 			C.SubstructureNotifyMask,
 			C.SubstructureRedirectMask)
-		send_client_message(screen.root, e, false, mask)
+		send_message(screen.root, e, propagate, mask)
 	end
 
 	--window attributes -------------------------------------------------------
@@ -565,6 +611,8 @@ function M.connect(...)
 		if mask == 0 then return end --nothing to set
 		assert(C.XChangeWindowAttributes(c, win, mask, attrs) == 0)
 	end
+
+	--window geometry ---------------------------------------------------------
 
 	local rbuf = ffi.new'Window[1]'
 	local xbuf = ffi.new'int[1]'
@@ -594,8 +642,20 @@ function M.connect(...)
 		C.XConfigureWindow(c, win, mask, cbuf)
 	end
 
-	function raise(win) C.XRaiseWindow(c, win) end
-	function lower(win) C.XLowerWindow(c, win) end
+	--coordinate space translation --------------------------------------------
+
+	local xbuf = ffi.new'int[1]'
+	local ybuf = ffi.new'int[1]'
+	local winbuf = ffi.new'Window[1]'
+	function translate_coords(src_win, dst_win, x, y)
+		if C.XTranslateCoordinates(c, src_win, dst_win, x, y, xbuf, ybuf, winbuf) == 0 then
+			return --windows are on different screens
+		end
+		return xbuf[0], ybuf[0], xid(winbuf[0])
+	end
+
+	--_NET_SUPPORTED property -------------------------------------------------
+	--it's a big atom map which tells which features the server supports.
 
 	net_supported_map = glue.memoize(function()
 		return get_atom_map_prop(screen.root, '_NET_SUPPORTED')
@@ -603,6 +663,12 @@ function M.connect(...)
 	function net_supported(s)
 		return net_supported_map()[s]
 	end
+
+	--_NET_WM_STATE property --------------------------------------------------
+	--tracks maximization, minimization/hiding (read-only), fullscreen and topmost flags.
+
+	--NOTE: all _NET_WM_STATE flags are cleared when withdrawing a window!
+	--The position and size of the window in normal state are also lost.
 
 	function get_net_wm_state(win, key)
 		return get_atom_map_prop(win, '_NET_WM_STATE', key)
@@ -612,8 +678,45 @@ function M.connect(...)
 	end
 	function change_net_wm_state(win, set, atom1, atom2) --after a window is mapped, use this.
 		local e = atom_list_event(win, '_NET_WM_STATE', set and 1 or 0, atom1, atom2)
-		send_client_message_to_root(e)
+		send_message_to_root(e)
 	end
+
+	--NOTE: this tracks minimization too, without distinguishing from hiding.
+	function get_net_wm_state_hidden(win)
+		return get_net_wm_state(win, '_NET_WM_STATE_HIDDEN') or false
+	end
+
+	function get_net_wm_state_maximized(win)
+		return get_net_wm_state(win, '_NET_WM_STATE_MAXIMIZED_HORZ') or false
+	end
+	function change_net_wm_state_maximized(win, maximized)
+		change_net_wm_state(win, maximized,
+			'_NET_WM_STATE_MAXIMIZED_HORZ',
+			'_NET_WM_STATE_MAXIMIZED_VERT')
+	end
+
+	function get_net_wm_state_fullscreen(win)
+		return get_net_wm_state(win, '_NET_WM_STATE_FULLSCREEN') or false
+	end
+	function change_net_wm_state_fullscreen(win, fullscreen)
+		return change_net_wm_state(win, fullscreen, '_NET_WM_STATE_FULLSCREEN')
+	end
+
+	function get_net_wm_state_topmost(win)
+		return get_net_wm_state(win, '_NET_WM_STATE_ABOVE') or false
+	end
+	function change_net_wm_state_topmost(win, topmost)
+		change_net_wm_state(win, topmost, '_NET_WM_STATE_ABOVE')
+	end
+
+	--WM_HINTS property -------------------------------------------------------
+	--for specifying additional _initial_ parameters (it doesn't track them!).
+
+	--NOTE: setting initial_state to IconicState results in the clearing of
+	--any _NET_WM_STATE flags and replacing them with _NET_WM_STATE_HIDDEN
+	--so that the maximized and fullscreen states cannot be tracked anymore.
+	--So better leave initial_state alone and set _NET_WM_STATE_HIDDEN instead
+	--if you want to show a window in minimized state.
 
 	local hints = ptr(C.XAllocWMHints(), C.XFree)
 	local masks = {
@@ -638,12 +741,15 @@ function M.connect(...)
 		C.XSetWMHints(c, win, hints)
 	end
 
+	--WM_NORMAL_HINTS property ------------------------------------------------
+	--tracks window constraints and sets window's _initial_ position.
+
 	local hints = ptr(C.XAllocSizeHints(), C.XFree)
 	local masks = {
-		x = C.PPosition,
-		y = C.PPosition,
-		width = C.PSize,
-		height = C.PSize,
+		x = C.USPosition, --C.PPosition,
+		y = C.USPosition, --C.PPosition,
+		width  = C.USSize, --C.PSize,
+		height = C.USSize, --C.PSize,
 		min_width  = C.PMinSize,
 		min_height = C.PMinSize,
 		max_width  = C.PMaxSize,
@@ -662,6 +768,9 @@ function M.connect(...)
 		return maskedget(hints, mask[0], masks)
 	end
 
+	--_MOTIF_WM_HINTS property ------------------------------------------------
+	--controls window's appearance and available state-changing operations.
+
 	local function decode_motif_wm_hints(val, len)
 		return ffi.new('PropMotifWmHints', cast('PropMotifWmHints*', val)[0])
 	end
@@ -673,6 +782,9 @@ function M.connect(...)
 			C.MOTIF_WM_HINTS_ELEMENTS)
 	end
 
+	--WM_STATE property -------------------------------------------------------
+	--can be used to distinguish between visible, minimized and hidden states.
+
 	local function decode_wm_state(val, len)
 		assert(len >= 2)
 		val = ffi.cast('int32_t*', val)
@@ -683,14 +795,21 @@ function M.connect(...)
 		if t then return unpack(t) end
 	end
 
-	--use this to change WM_STATE after the window is mapped.
-	--NOTE: this works with C.IconincState but not with C.NormalState.
-	--To restore a minimized window, map it instead.
-	function change_wm_state(win, state)
-		local e = client_message_event(win, 'WM_CHANGE_STATE')
-		e.xclient.data.l[0] = state
-		send_client_message_to_root(e)
+	--returns true if minimized or normal, false if not yet mapped or withdrawn.
+	function get_wm_state_visible(win)
+		local st = xlib.get_wm_state(win)
+		return st and st ~= C.WithdrawnState or false
 	end
+
+	--returns true if visible and minimized.
+	function get_wm_state_iconic(win)
+		local st, icon_window_id = xlib.get_wm_state(win)
+		return st == C.IconicState, icon_window_id
+	end
+
+	--WM_TRANSIENT_FOR property -----------------------------------------------
+	--transient windows stay on top of their target, can't be minimized
+	--or maximized and don't appear in taskbar. they are good for tool windows.
 
 	local winbuf = ffi.new'Window[1]'
 	function get_transient_for(win)
@@ -701,15 +820,20 @@ function M.connect(...)
 		C.XSetTransientForHint(c, win, for_win)
 	end
 
-	--NOTE: set all other window properties before requesting the frame extents.
-	--NOTE: the property is not always set immediately so retry with a timeout.
-	--NOTE: as usual, expect this to be implemented poorly in most WMs.
+	--_NET_FRAME_EXTENTS property ---------------------------------------------
+
 	function frame_extents_supported()
 		return net_supported'_NET_REQUEST_FRAME_EXTENTS'
 	end
+
+	--NOTE: _NET_FRAME_EXTENTS is not set up until the window is mapped, but
+	--it can be requested by calling this function. The property is not set
+	--immediately so you'll have to retry getting it a few times. As usual,
+	--expect this to be poorly supported because there's only so much UI
+	--programming mojo out there in the Linux world and it wasn't wasted here.
 	function request_frame_extents(win)
 		local e = client_message_event(win, atom'_NET_REQUEST_FRAME_EXTENTS')
-		send_client_message_to_root(e)
+		send_message_to_root(e)
 	end
 	local function decode_extents(val)
 		val = cast('long*', val)
@@ -725,32 +849,43 @@ function M.connect(...)
 		if t then return unpack(t) end
 	end
 
-	--NOTE: XMapWindow doesn't raise and doesn't activate the window.
-	--NOTE: XMapWindow is async (wait for MapNotify to make it sync
-	--but note that MapNotify is not sent if the window is hidden + minimized).
-	function map(win)
-		C.XMapWindow(c, win)
-	end
-
-	--NOTE: XWithdrawWindow should always be used instead of XUnmapWindow
-	--because XUnmapWindow doesn't send the synthetic UnmapNotify required
-	--per ICCCM, so it doesn't properly hide minimized windows.
-	--NOTE: XWithdrawWindow is async (wait for UnmapNotify to make it sync
-	--but note that UnmapNotify is not sent if the window was minimized).
-	function withdraw(win)
-		C.XWithdrawWindow(c, win, screen_num)
-	end
+	--_NET_ACTIVE_WINDOW property ---------------------------------------------
+	--tracks activation of top-level windows.
 
 	function get_net_active_window()
 		return get_window_prop(screen.root, '_NET_ACTIVE_WINDOW')
 	end
+
 	function change_net_active_window(win, focused_win)
 		local e = int32_list_event(win, '_NET_ACTIVE_WINDOW',
 			1, --message comes from an app
 			0, --timestamp
 			focused_win or C.None)
-		send_client_message_to_root(e)
+		send_message_to_root(e)
 	end
+
+	--WM_NAME property --------------------------------------------------------
+	--tracks window title in the titlebar.
+
+	function get_wm_name(win)
+		return get_string_prop(win, C.XA_WM_NAME)
+	end
+	function set_wm_name(win, name)
+		set_string_prop(win, C.XA_WM_NAME, name)
+	end
+
+	--WM_ICON_NAME property ---------------------------------------------------
+	--tracks window's title in the taskbar.
+
+	function get_wm_icon_name(win)
+		return get_string_prop(win, C.XA_WM_ICON_NAME)
+	end
+	function set_wm_icon_name(win, name)
+		set_string_prop(win, C.XA_WM_ICON_NAME, name)
+	end
+
+	--input focus -------------------------------------------------------------
+	--NOTE: for top-level windows use the _NET_ACTIVE_WINDOW property instead.
 
 	local winbuf = ffi.new'Window[1]'
 	local fstate = ffi.new'int[1]'
@@ -763,101 +898,15 @@ function M.connect(...)
 		C.XSetInputFocus(c, win, fstate or C.RevertToNone, C.CurrentTime)
 	end
 
-	do
-		local xbuf = ffi.new'int[1]'
-		local ybuf = ffi.new'int[1]'
-		local winbuf = ffi.new'Window[1]'
-		function translate_coords(src_win, dst_win, x, y)
-			if C.XTranslateCoordinates(c, src_win, dst_win, x, y, xbuf, ybuf, winbuf) == 0 then
-				return --windows are on different screens
-			end
-			return xbuf[0], ybuf[0], xid(winbuf[0])
-		end
-	end
-
-	function get_title(win)
-		return get_string_prop(win, C.XA_WM_NAME)
-	end
-	function set_title(win, title)
-		set_string_prop(win, C.XA_WM_NAME, title)
-		set_string_prop(win, C.XA_WM_ICON_NAME, title)
-	end
-
-	--root window attributes --------------------------------------------------
-
-	function get_net_workarea(screen1, desktop_num)
-		local screen = screen1 or screen
-		local t = get_int_list_prop(screen.root, '_NET_WORKAREA')
-		if not t then return end
-		local dt = {}
-		for i=1,#t,4 do
-			dt[#dt+1] = {unpack(t, i, i+3)}
-		end
-		return desktop_num and dt[desktop_num] or dt
-	end
-
-	--selections --------------------------------------------------------------
-
-	function get_selection_owner(sel)
-		return xid(C.XGetSelectionOwner(c, atom(sel)))
-	end
-
-	--xsettings extension -----------------------------------------------------
-
-	function get_xsettings_window(screen0)
-		local snum = C.XScreenNumberOfScreen(screen0 or screen)
-		return get_selection_owner('_XSETTINGS_S'..snum)
-	end
-
-	function set_xsettings_change_notify()
-		local win = get_xsettings_window()
-		if not win then return end
-		set_attrs(win, {event_mask = mask})
-	end
-
-	function get_xsettings()
-		local xsettings = require'xlib_xsettings'
-		local win = get_xsettings_window()
-		if not win then return end
-		return get_prop(win, '_XSETTINGS_SETTINGS', xsettings.decode)
-	end
-
-	--cursors -----------------------------------------------------------------
-
-	local ctx
-	function load_cursor(name)
-		if not ctx then
-			local xcursor = require'xlib_xcursor'
-			ctx = xcursor.context(c, screen)
-			table.insert(cleanup, function() ctx:free() end)
-		end
-		return ctx:load(name)
-	end
-
-	function set_cursor(win, cursor)
-		set_attrs(win, {cursor = cursor})
-	end
-
-	local bcur
-	function blank_cursor()
-		if not bcur then
-			bcur = gen_id()
-			local pix = gen_id()
-			C.xcb_create_pixmap(c, 1, pix, screen.root, 1, 1)
-			C.xcb_create_cursor(c, bcur, pix, pix, 0, 0, 0, 0, 0, 0, 0, 0)
-			C.xcb_free_pixmap(c, pix)
-		end
-		return bcur
-	end
-
-	--_NET_WM_PING protocol helpers -------------------------------------------
+	--_NET_WM_PING protocol ---------------------------------------------------
+	--a protocol which allows a WM to ping and kill a non-responding app.
 
 	--respond to a _NET_WM_PING event
 	function pong(e)
 		local reply = ffi.new('XEvent', ffi.cast('XEvent*', e)[0])
 		reply.type = C.ClientMessage
 		reply.xclient.window = screen.root
-		send_client_message_to_root(reply) --pong!
+		send_message_to_root(reply) --pong!
 	end
 
 	--set _NET_WM_PID and WM_CLIENT_MACHINE as needed by the protocol
@@ -876,6 +925,103 @@ function M.connect(...)
 		if name then
 			set_string_prop(win, 'WM_CLIENT_MACHINE', name)
 		end
+	end
+
+	--window commands ---------------------------------------------------------
+
+	--NOTE: XMapWindow doesn't activate minimized windows, but does active hidden windows.
+	--NOTE: MapNotify is not sent if the window was minimized.
+	function map(win)
+		C.XMapWindow(c, win)
+	end
+
+	--NOTE: XWithdrawWindow should always be used instead of XUnmapWindow
+	--for top-level windows because XUnmapWindow doesn't send the synthetic
+	--UnmapNotify required per ICCCM, so it doesn't properly hide minimized windows.
+	--NOTE: UnmapNotify is not sent if the window was minimized.
+	function withdraw(win)
+		C.XWithdrawWindow(c, win, screen_num)
+	end
+
+	--NOTE: minimizing implies unmapping. To unminimize, call map().
+	function iconify(win)
+		C.XIconifyWindow(c, win, screen_num) --sends WM_CHANGE_STATE message
+	end
+
+	--selections --------------------------------------------------------------
+
+	function get_selection_owner(sel)
+		return xid(C.XGetSelectionOwner(c, atom(sel)))
+	end
+
+	--_NET_WORKAREA property --------------------------------------------------
+	--tracks desktop area (screen minus taskbars) for the main screen.
+	--for secondary screens you're out of luck (told you about that mojo).
+
+	function get_net_workarea(screen1, desktop_num)
+		local screen = screen1 or screen
+		local t = get_int_list_prop(screen.root, '_NET_WORKAREA')
+		if not t then return end
+		local dt = {}
+		for i=1,#t,4 do
+			dt[#dt+1] = {unpack(t, i, i+3)}
+		end
+		return desktop_num and dt[desktop_num] or dt
+	end
+
+	--XSETTINGS extension -----------------------------------------------------
+	--this is a dictionary for global desktop settings probably born
+	--out of a Unix programmer's love and interest for ad-hoc data formats.
+
+	function get_xsettings_window(screen0)
+		local snum = C.XScreenNumberOfScreen(screen0 or screen)
+		return get_selection_owner('_XSETTINGS_S'..snum)
+	end
+
+	function set_xsettings_change_notify()
+		C.XGrabServer(c)
+		local ok, err = pcall(function()
+			local win = get_xsettings_window()
+			if not win then return end
+			C.XSelectInput(c, win, bor(C.StructureNotifyMask, C.PropertyChangeMask))
+		end)
+		C.XUngrabServer(c)
+		assert(ok, err)
+	end
+
+	function get_xsettings()
+		local xsettings = require'xlib_xsettings'
+		local win = get_xsettings_window()
+		if not win then return end
+		return get_prop(win, '_XSETTINGS_SETTINGS', xsettings.decode)
+	end
+
+	--cursors -----------------------------------------------------------------
+
+	local ctx
+	function load_cursor(name)
+		if not ctx then
+			local xcursor = require'xlib_xcursor'
+			ctx = xcursor.context(c, screen)
+			gc(function() ctx:free() end)
+		end
+		return ctx:load(name)
+	end
+
+	function set_cursor(win, cursor)
+		set_attrs(win, {cursor = cursor})
+	end
+
+	local bcur
+	function blank_cursor()
+		if not bcur then
+			bcur = gen_id()
+			local pix = gen_id()
+			C.xcb_create_pixmap(c, 1, pix, screen.root, 1, 1)
+			C.xcb_create_cursor(c, bcur, pix, pix, 0, 0, 0, 0, 0, 0, 0, 0)
+			C.xcb_free_pixmap(c, pix)
+		end
+		return bcur
 	end
 
 	--rendering ---------------------------------------------------------------
@@ -909,6 +1055,7 @@ function M.connect(...)
 	end
 
 	--Xinerama extension ------------------------------------------------------
+	--lists virtual screens in multi-monitor setups.
 
 	local XC
 	function xinerama_screens()
@@ -918,6 +1065,32 @@ function M.connect(...)
 		local nbuf = ffi.new'int[1]'
 		local screens = ptr(XC.XineramaQueryScreens(c, nbuf), C.XFree)
 		return screens, nbuf[0]
+	end
+
+	--keyboard ----------------------------------------------------------------
+
+	local buf
+	function query_keymap()
+		buf = buf or ffi.new'char[32]'
+		C.XQueryKeymap(c, buf)
+		return buf
+	end
+
+	--NOTE: XKeycodeToKeysym() is deprecated and can be replaced with
+	--XGetKeyboardMapping() or XkbKeycodeToKeysym().
+	function keysym(keycode, group, level)
+		return C.XkbKeycodeToKeysym(c, keycode, group, level)
+	end
+
+	function keycode(keysym)
+		return C.XKeysymToKeycode(c, keysym)
+	end
+
+	local state
+	function get_keyboard_control()
+		state = state or ffi.new'XKeyboardState'
+		C.XGetKeyboardControl(c, state)
+		return state
 	end
 
 	--[[
@@ -945,7 +1118,7 @@ function M.connect(...)
 		end
 		local ic = ptr(C.XCreateIC(im,
 			C.XNInputStyle,
-			bit.bor(C.XIMPreeditNothing, C.XIMStatusNothing),
+			bor(C.XIMPreeditNothing, C.XIMStatusNothing),
 			C.XNClientWindow, self.win, nil)
 		if not ic then return end
 		C.XSetICFocus(ic)
