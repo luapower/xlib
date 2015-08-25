@@ -32,9 +32,7 @@ end
 
 print'### create_window'
 local win = xlib.create_window{
-	x = 300, y = 100,
-	width = 500,
-	height = 300,
+	x = 300, y = 100, width = 500, height = 300,
 	event_mask = bit.bor(
 		C.KeyPressMask,
 		C.PropertyChangeMask,
@@ -48,7 +46,7 @@ print'### set_title'
 xlib.set_wm_name(win, 'win')
 
 print'### set_wm_size_hints'
-xlib.set_wm_size_hints(win, {x = 0, y = 0, min_width = 200, min_height = 200})
+xlib.set_wm_size_hints(win, {x = 0, y = 0})--, min_width = 200, min_height = 200})
 
 print'win props:'
 for i,a in xlib.list_props(win) do
@@ -124,7 +122,6 @@ xlib.set_net_wm_state(win, {
 	_NET_WM_STATE_MAXIMIZED_VERT = true,
 	_NET_WM_STATE_HIDDEN = true,
 })
---xlib.set_wm_hints(win, {initial_state = C.IconicState})
 ]]
 
 print'### map'

@@ -220,6 +220,10 @@ function M.connect(...)
 		return extensions()[s]
 	end
 
+	function version()
+		return C.XProtocolVersion(c), C.XProtocolRevision(c)
+	end
+
 	--events ------------------------------------------------------------------
 
 	local e = ffi.new'XEvent'
@@ -714,9 +718,10 @@ function M.connect(...)
 
 	--NOTE: setting initial_state to IconicState results in the clearing of
 	--any _NET_WM_STATE flags and replacing them with _NET_WM_STATE_HIDDEN
-	--so that the maximized and fullscreen states cannot be tracked anymore.
+	--which means the maximized and fullscreen states cannot be tracked anymore.
 	--So better leave initial_state alone and set _NET_WM_STATE_HIDDEN instead
-	--if you want to show a window in minimized state.
+	--if you want to show a window in minimized state _and_ have the maximized
+	--and fullscreen states still available for querying while minimized.
 
 	local hints = ptr(C.XAllocWMHints(), C.XFree)
 	local masks = {
@@ -996,34 +1001,6 @@ function M.connect(...)
 		return get_prop(win, '_XSETTINGS_SETTINGS', xsettings.decode)
 	end
 
-	--cursors -----------------------------------------------------------------
-
-	local ctx
-	function load_cursor(name)
-		if not ctx then
-			local xcursor = require'xlib_xcursor'
-			ctx = xcursor.context(c, screen)
-			gc(function() ctx:free() end)
-		end
-		return ctx:load(name)
-	end
-
-	function set_cursor(win, cursor)
-		set_attrs(win, {cursor = cursor})
-	end
-
-	local bcur
-	function blank_cursor()
-		if not bcur then
-			bcur = gen_id()
-			local pix = gen_id()
-			C.xcb_create_pixmap(c, 1, pix, screen.root, 1, 1)
-			C.xcb_create_cursor(c, bcur, pix, pix, 0, 0, 0, 0, 0, 0, 0, 0)
-			C.xcb_free_pixmap(c, pix)
-		end
-		return bcur
-	end
-
 	--rendering ---------------------------------------------------------------
 
 	--NOTE: XClearWindow() doesn't generate Expose events.
@@ -1091,6 +1068,34 @@ function M.connect(...)
 		state = state or ffi.new'XKeyboardState'
 		C.XGetKeyboardControl(c, state)
 		return state
+	end
+
+	--cursors -----------------------------------------------------------------
+
+	local ctx
+	function load_cursor(name)
+		if not ctx then
+			local xcursor = require'xlib_xcursor'
+			ctx = xcursor.context(c, screen)
+			gc(function() ctx:free() end)
+		end
+		return ctx:load(name)
+	end
+
+	function set_cursor(win, cursor)
+		set_attrs(win, {cursor = cursor})
+	end
+
+	local bcur
+	function blank_cursor()
+		if not bcur then
+			bcur = gen_id()
+			local pix = gen_id()
+			C.xcb_create_pixmap(c, 1, pix, screen.root, 1, 1)
+			C.xcb_create_cursor(c, bcur, pix, pix, 0, 0, 0, 0, 0, 0, 0, 0)
+			C.xcb_free_pixmap(c, pix)
+		end
+		return bcur
 	end
 
 	--[[
