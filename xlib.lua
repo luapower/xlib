@@ -1137,13 +1137,13 @@ function M.connect(...)
 			image.bytes_per_line * image.height,
 			bit.bor(shm.IPC_CREAT, 0x1ff)) --0777
 		if shminfo.shmid == 0 then
-			XC.XDestroyImage(image)
+			X.XDestroyImage(image)
 			error'shmget failed'
 		end
 		shminfo.shmaddr = shm.shmat(shminfo.shmid, nil, 0)
 		image.data = shminfo.shmaddr
 		if XC.XShmAttach(c, shminfo) == 0 then
-			XC.XDestroyImage(image)
+			X.XDestroyImage(image)
 			shm.shmdt(shminfo.shmaddr)
 			shm.shmctl(shminfo.shmid, shm.IPC_RMID, 0)
 			error'XShmAttach failed'
@@ -1153,9 +1153,9 @@ function M.connect(...)
 
 	function shm_free_image(image, shminfo)
 		XC.XShmDetach(c, shminfo)
-		XC.XDestroyImage(image)
+		X.XDestroyImage(image)
 		shm.shmdt(shminfo.shmaddr)
-		shm.shmctl(shminfo.shmid, shm.IPC_RMID, 0)
+		shm.shmctl(shminfo.shmid, shm.IPC_RMID, nil)
 	end
 
 	function shm_put_image(gc, image, w, h, xid, dx, dy)
